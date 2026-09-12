@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      # `node --test` exits 0 when its glob matches nothing, so a suite that
+      # silently vanished would look like a suite that passed. Assert the
+      # files are actually there before believing the green.
+      - name: Guard against a vacuous test run
+        run: |
+          test "$(find test -name '*.test.ts' | wc -l)" -ge 1
+          test -f e2e/electron-smoke.test.ts
+
+      - run: npm test
+
+      - run: npm run typecheck
+
+      - run: npm run lint
+
+      - run: npm run verify
+
+      # Before the Electron smoke test: that runs against the production
+      # build, not the dev server.
+      - run: npm run build
+
+      # Electron needs a display. ubuntu-latest ships xvfb, but install it if
+      # a future image does not rather than failing obscurely.
+      - name: Ensure a virtual display
+        run: which xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
+
+      - name: Electron smoke test
+        run: xvfb-run -a npm run test:electron

@@ -1,0 +1,376 @@
+/*
+ * Semantic tokens, one set per theme.
+ *
+ * Every colour in the interface comes from here. A component that reaches for
+ * a literal has, by construction, only one theme — which is how the previous
+ * palette worked and why converting it was a whole stage of work rather than a
+ * find-and-replace.
+ *
+ * Names describe the *role*, not the colour: `--warn-surface` stays the
+ * warning surface when it is pale yellow in light and near-black amber in
+ * dark. Anything named for what it looks like has to be renamed the moment a
+ * second theme exists.
+ *
+ * Dark is the base and light is the override. That ordering is deliberate:
+ * dark is what this app has always been, so a document that renders before
+ * `data-theme` is applied renders the way it used to rather than flashing
+ * something new. See `lib/theme.svelte.ts` for who sets that attribute, and
+ * `electron/windows.ts` for the window background that sits behind it.
+ */
+
+:root {
+  --bg: #07111a;
+  --bg-deep: #050d15;
+  --bg-panel: #0c1822;
+  --bg-raised: #11202b;
+  --bg-soft: #0f1b25;
+  --bg-input: #08131c;
+
+  --border: #263744;
+  --border-strong: #354957;
+
+  --text: #f1f5f7;
+  --text-dim: #c3ced6;
+  --text-faint: #8f9eaa;
+  --text-disabled: #8a98a4;
+
+  --signal: #37c7b3;
+  /*
+   * The filled selected surface, darkened to carry normal-size text.
+   *
+   * This was #1e9d8c, which measured **3.20:1** against `--on-signal` — below
+   * the 4.5 floor for the 12–13px labels that actually sit on it: the active
+   * Studio/History destination, the envelope-shape and routing segments, and
+   * the selected session duration. The shortfall was initially left as a palette
+   * decision; independent review returned it as a P1, which settled that decision.
+   *
+   * #187e70 is the same hue and saturation with the lightness scaled to 0.80,
+   * so teal keeps its priority and its relationship to `--signal` above.
+   * Measured 4.71:1 against `--on-signal`, and 3.36:1 against the panel it
+   * sits on — the fill still has to be visible as a control, not only legible.
+   * It now sits just above the Soundscape pair's 4.56:1 instead of well below
+   * it, which is the inconsistency D-2 asked not to be rediscovered a third
+   * time.
+   */
+  --signal-strong: #187e70;
+  --signal-soft: #123b38;
+  --soundscape: #8e78f4;
+  --soundscape-soft: #272142;
+  /*
+   * The filled counterpart, so Soundscape's controls can carry its own accent.
+   * Measured against #f3efff at 4.56:1 — above the 4.5 floor, and above the
+   * 3.20:1 the teal pair manages in this theme.
+   */
+  --soundscape-strong: #6d5ad6;
+  --on-soundscape: #f3efff;
+  --warn: #f6b73c;
+  --warn-surface: #332914;
+  --danger: #ef7378;
+  --danger-surface: #381b22;
+
+  --chart-grid: #253541;
+  /*
+   * A canvas cannot use `var()`, so every colour it draws needs a token of its
+   * own for `getComputedStyle` to read. Alpha is baked in here rather than
+   * composed in JavaScript: the fade of an envelope fill is a design decision,
+   * and splitting it between a hex token and a hard-coded 0.30 puts half of
+   * that decision back in the component.
+   */
+  --chart-grid-faint: #182029;
+  --chart-axis-text: #7d8d99;
+  --chart-signal: #37c7b3;
+  --chart-signal-fill-edge: rgb(55 199 179 / 0.3);
+  --chart-signal-fill-mid: rgb(55 199 179 / 0.1);
+  --chart-marker-strong: rgb(55 199 179 / 0.75);
+  --chart-marker-weak: rgb(55 199 179 / 0.35);
+  --chart-marker-label-strong: #37c7b3;
+  --chart-marker-label-weak: rgb(55 199 179 / 0.8);
+  --chart-bed-line: rgb(165 152 252 / 0.9);
+  --chart-bed-fill-top: rgb(142 120 244 / 0.45);
+  --chart-bed-fill-bottom: rgb(142 120 244 / 0.05);
+
+  /*
+   * Text that sits *on* a filled accent, rather than beside it.
+   *
+   * Separate tokens because they do not follow the theme the way the rest do:
+   * a filled teal button wants near-white in both themes, and deriving it from
+   * `--text` would put dark grey on dark teal in light mode.
+   */
+  --on-signal: #e6fffa;
+  --on-danger: #ffe8ea;
+
+  /* Filled control surfaces, and where they go on hover. */
+  --signal-surface: #12403c;
+  --signal-surface-hover: #17514c;
+  --danger-surface-hover: #4a2329;
+
+  /* The default control state, and where a hover takes it. */
+  --control-hover-bg: #182734;
+  --control-hover-border: #46596a;
+
+  /* Modal scrim. Shadows are for modal elevation only, not for controls. */
+  --overlay: rgb(2 6 10 / 0.62);
+  --shadow-modal: 0 18px 48px rgb(0 0 0 / 0.5);
+
+  --focus: var(--signal);
+
+  --radius: 8px;
+  --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #f3f6f7;
+  --bg-deep: #eaf0f2;
+  --bg-panel: #ffffff;
+  --bg-raised: #f7fafb;
+  --bg-soft: #f0f5f6;
+  --bg-input: #f7f9fa;
+
+  --border: #d2dde2;
+  --border-strong: #bccad1;
+
+  --text: #152431;
+  --text-dim: #344959;
+  --text-faint: #617483;
+  --text-disabled: #5c6c79;
+
+  --signal: #079a85;
+  --signal-strong: #057d6d;
+  --signal-soft: #d8f1ed;
+  --soundscape: #7257df;
+  --soundscape-soft: #ece8fc;
+  /* 6.94:1 against #ffffff. */
+  --soundscape-strong: #5b41c7;
+  --on-soundscape: #ffffff;
+  --warn: #8f5600;
+  --warn-surface: #fff2d1;
+  --danger: #a83a45;
+  --danger-surface: #fae5e7;
+
+  --chart-grid: #d8e1e5;
+  --chart-grid-faint: #e7eef1;
+  --chart-axis-text: #54646f;
+  --chart-signal: #079a85;
+  --chart-signal-fill-edge: rgb(7 154 133 / 0.28);
+  --chart-signal-fill-mid: rgb(7 154 133 / 0.08);
+  --chart-marker-strong: rgb(5 125 109 / 0.85);
+  --chart-marker-weak: rgb(5 125 109 / 0.4);
+  --chart-marker-label-strong: #046353;
+  --chart-marker-label-weak: #057d6d;
+  --chart-bed-line: rgb(90 66 194 / 0.9);
+  --chart-bed-fill-top: rgb(114 87 223 / 0.35);
+  --chart-bed-fill-bottom: rgb(114 87 223 / 0.04);
+
+  --on-signal: #ffffff;
+  --on-danger: #ffffff;
+
+  /*
+   * Preview and Start session are filled teal with white 14px labels, and at
+   * #079a85 that measured **3.52:1**. Found by measuring every text/background
+   * pair in the running app while fixing the dark selected state above, rather
+   * than in the review — same token family, same defect, other theme.
+   * #068371 is lightness scaled to 0.85: 4.67:1 against white and 4.30:1
+   * against the page, so the button is legible and still reads as a filled
+   * control. The hover darkens further so the step stays visible.
+   */
+  --signal-surface: #068371;
+  --signal-surface-hover: #046659;
+  --danger-surface-hover: #9d3841;
+
+  --control-hover-bg: #e9eff1;
+  --control-hover-border: #a9bac3;
+
+  --overlay: rgb(21 36 49 / 0.38);
+  --shadow-modal: 0 18px 48px rgb(21 36 49 / 0.18);
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  /*
+   * Inter, with the system stack behind it.
+   *
+   * Self-hosted through Fontsource rather than fetched: this app has no
+   * network at runtime by design, and a font that only arrives online would
+   * render as the fallback on the machines that matter. The variable file is
+   * one packaging input covering every weight the design asks for (400, 500,
+   * 600) instead of three static ones.
+   *
+   * The fallback is not decoration either. If the face fails to load from the
+   * packaged archive, the interface must still render in something with the
+   * same metrics rather than in a serif default.
+   */
+  font-family:
+    'Inter Variable',
+    Inter,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  transition:
+    background 120ms,
+    border-color 120ms;
+}
+
+button:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
+}
+
+/*
+ * Dimmed, not erased.
+ *
+ * A blanket opacity on a control group takes its labels and values with it,
+ * and a disabled level the user cannot read is worse than one they cannot
+ * move — they still need to know what it is set to. Colour carries the
+ * disabled state; the text keeps its own readable token.
+ */
+button:disabled {
+  color: var(--text-disabled);
+  background: var(--bg-soft);
+  border-color: var(--border);
+  cursor: not-allowed;
+}
+
+select,
+input[type='text'] {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+}
+
+select:disabled,
+input[type='text']:disabled {
+  color: var(--text-disabled);
+  background: var(--bg-soft);
+}
+
+/*
+ * A range input's box is its hit region.
+ *
+ * The track is 4px and the thumb 14px, but what a pointer can grab is the
+ * element itself — so at the old 20px every slider in the recipe was a
+ * 20px-tall target, well under the 36px minimum, and on a trackpad the miss
+ * rate showed it. The track and thumb are unchanged and stay centred; only
+ * the invisible box around them grows.
+ */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 36px;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+}
+
+input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--bg-input);
+  border-radius: 2px;
+  border: 1px solid var(--border);
+}
+
+/*
+ * The thumb takes whichever accent its layer publishes.
+ *
+ * `--layer-accent` is set by `RecipeLayer` and inherits, so a slider inside
+ * Soundscape is violet and one inside Entrainment or Two-tone is teal, without
+ * either component knowing which layer it is in. The fallback covers every
+ * slider outside a layer — Master in the header is the one that matters.
+ */
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--layer-accent, var(--signal));
+  border: none;
+}
+
+input[type='range']:disabled::-webkit-slider-thumb {
+  background: var(--text-disabled);
+}
+
+/*
+ * Every focusable thing, not most of them.
+ *
+ * Text and number inputs were missing here, and the tuner's frequency entry
+ * suppressed the browser's own outline on top of that — so the one control in
+ * Studio that takes typed input had no visible focus at all. A list is only as
+ * good as its last line; add new interactive elements to it.
+ */
+input[type='range']:focus-visible,
+input[type='text']:focus-visible,
+input[type='number']:focus-visible,
+input[type='checkbox']:focus-visible,
+input[type='file']:focus-visible,
+button:focus-visible,
+select:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Studio is a tool, and a tool should feel stable.
+ *
+ * The transitions here are the small state changes — hover, selection — at the
+ * 120–160 ms the design calls for. Under a reduced-motion preference they go
+ * away entirely rather than being shortened, because the request is for no
+ * motion rather than for less of it.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

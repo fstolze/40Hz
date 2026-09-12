@@ -1,0 +1,85 @@
+# Packaging.
+#
+# electron-builder rather than Forge, because this repo already has a
+# deliberate build pipeline — worklets, then Vite, then esbuild for main and
+# preload — and Forge wants to own that. This packages whatever `out/` already
+# contains and touches nothing else.
+#
+# Nothing here is signed. Recipients see a Gatekeeper prompt on macOS and a
+# SmartScreen warning on Windows; the README says how to get past both. Adding
+# signing later changes this file and the release workflow, and nothing else.
+
+appId: us.stolze.fortyhz
+productName: 40 Hz
+copyright: © Frank Stolze
+
+directories:
+  output: dist
+  buildResources: build
+
+# `dependencies` is empty — esbuild and Vite bundle everything the app runs —
+# so no node_modules ship and there is nothing to rebuild. The whole payload is
+# under half a megabyte; the rest of any artifact is the Electron runtime.
+files:
+  - out/**
+  - package.json
+
+asar: true
+# No native modules, so skip the rebuild step entirely.
+npmRebuild: false
+
+# `${name}` is the package name (fortyhz) rather than productName, which has a
+# space in it and would arrive URL-escaped in a download.
+#
+# The commit is in there because the version alone stopped identifying anything:
+# it sat at 0.2.0 for 85 commits, so every build ever shared had the same
+# filename and the recipient could not tell them apart.
+#
+# `scripts/dist.mjs` sets FORTYHZ_COMMIT, and `npm run dist` goes through it.
+# Invoking electron-builder directly fails with ERR_ELECTRON_BUILDER_ENV_NOT_DEFINED
+# rather than producing a file — which is the better failure: an artifact that
+# cannot say which build it is, is the problem this line exists to fix.
+artifactName: ${name}-${version}-${env.FORTYHZ_COMMIT}-${platform}-${arch}.${ext}
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  # Ad-hoc signing: enough for the app to run once the user has allowed it,
+  # and honest about being unsigned rather than pretending otherwise.
+  identity: null
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+
+nsis:
+  # Let the user choose where it goes, and install per-user so no
+  # administrator prompt is needed on top of the SmartScreen warning.
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  category: Audio
+  # Without this the binary is named from productName, space and all.
+  executableName: fortyhz
+  # Electron derives its app_id / WM_CLASS from `desktopName` in package.json,
+  # so the installed .desktop entry has to carry the same name or the desktop
+  # environment cannot match a running window to it — generic taskbar icon, no
+  # grouping. This makes electron-builder name the entry from `desktopName`
+  # instead of productName, which would otherwise write `StartupWMClass=40 Hz`
+  # and never match. Becomes the default in electron-builder 27.
+  syncDesktopName: true
+  # AppImage runs anywhere without installing; the .deb is for Debian and
+  # Ubuntu, where it also registers the desktop entry.
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  # Required for .deb, and embedded in the package others receive.
+  maintainer: Frank Stolze <frank@stolze.us>
+  description: A focus and concentration tool built on 40 Hz auditory entrainment.

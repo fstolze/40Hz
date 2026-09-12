@@ -1,0 +1,15 @@
+# One line ending everywhere: LF, in the repository and in the working tree.
+#
+# Prettier's `endOfLine` defaults to "lf" and `npm run lint` checks formatting,
+# so a tree checked out with CRLF — which Git for Windows does by default —
+# fails on essentially every file for a reason that has nothing to do with the
+# code. `eol=lf` settles it here rather than depending on each machine setting
+# `core.autocrlf`, so the rule travels with the repo.
+* text=auto eol=lf
+
+# Images: never touch the bytes. A "line ending" fix inside a PNG corrupts it
+# silently, and the tray icon is small enough that a broken one could easily be
+# mistaken for a rendering problem.
+*.png binary
+*.ico binary
+*.icns binary

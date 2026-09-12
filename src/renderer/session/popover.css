@@ -1,0 +1,17 @@
+/*
+ * The popover sizes its window, not the other way round.
+ *
+ * `app.css` gives Studio a full-viewport flex column, which is right for a
+ * window the user resizes. Here it would stretch the page to whatever height
+ * the window happens to be, so measuring the content would just report the
+ * window back and the window would never fit its content. Letting the document
+ * take its natural height is what makes the measurement mean anything.
+ */
+html,
+body {
+  height: auto;
+}
+
+#app {
+  height: auto;
+}
