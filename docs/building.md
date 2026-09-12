@@ -1,65 +1,55 @@
 # Building 40 Hz Studio from source
 
-Most people should install a ready-made build from
-[Releases](https://github.com/fstolze/40Hz/releases). This page covers building the app
-yourself, running it in development, and packaging installers.
+This page covers running the app in development, testing it, and packaging installers. To install
+a ready-made build instead, use [Releases](https://github.com/fstolze/40Hz/releases).
 
 ## Requirements
 
-- **Node.js 24 or later.** The tests and build scripts run TypeScript directly, using Node's
-  built-in type stripping and test runner. CI uses Node 24.
-- **npm.** The repository ships a `package-lock.json`.
-- **Git** (optional). Builds stamp the commit into the About panel and the installer filename,
-  and report `unknown` without it.
-- **To package an installer, a machine running that platform.** This project builds each
-  platform's installer on that platform; macOS apps cannot be cross-built at all. electron-builder
-  can cross-build some other targets, but that path is neither used nor tested here.
+| Requirement             | Why                                                                                                                    |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Node.js 24 or later** | Tests and build scripts run TypeScript directly, with Node's built-in type stripping and test runner. CI uses Node 24. |
+| **npm**                 | The repository ships a `package-lock.json`.                                                                            |
+| **Git** (optional)      | Builds stamp the commit into the About panel and the installer filename, and report `unknown` without it.              |
+| **The target platform** | Only to package installers, which are built on the platform they target.                                               |
 
-## Get the code
+## Quick start
 
 ```bash
 git clone https://github.com/fstolze/40Hz.git
 cd 40Hz
 npm install
-```
-
-All dependencies are development dependencies. The app itself bundles everything it runs.
-
-## Run in development
-
-```bash
 npm run dev
 ```
 
-Builds the AudioWorklets and the Electron main process, starts Vite, and launches the desktop
-app.
+All dependencies are development dependencies; the app bundles everything it runs.
 
-```bash
-npm run dev:web
-```
+## Commands
 
-Serves Studio alone at `http://localhost:5273` in an ordinary browser. The tray, the session
-popover and the desktop-only settings are not available there. It is the quickest way to work on
-the interface.
+| Command                 | Purpose                                                                                       |
+| ----------------------- | --------------------------------------------------------------------------------------------- |
+| `npm run dev`           | Builds the AudioWorklets and the Electron main process, starts Vite, launches the desktop app |
+| `npm run dev:web`       | Serves Studio alone at `http://localhost:5273` in an ordinary browser                         |
+| `npm test`              | Unit tests                                                                                    |
+| `npm run typecheck`     | `tsc` and `svelte-check`                                                                      |
+| `npm run lint`          | ESLint, then `prettier --check`                                                               |
+| `npm run verify`        | Prints a measurement report rather than pass/fail                                             |
+| `npm run build`         | Compiles the worklets, the renderer and the Electron main process into `out/`                 |
+| `npm run test:electron` | Electron smoke test; run `npm run build` first                                                |
+| `npm run dist`          | Builds, then packages installers for the current platform into `dist/`                        |
+| `npm run dist:dir`      | The unpacked app only, without installers — much faster                                       |
+| `npm run test:packaged` | Checks that audio starts in the packaged app; run `npm run dist:dir` first                    |
 
-A development run keeps its own presets, history and settings, separate from an installed copy of
-the app. Anything saved in development does not appear in the installed build, and the reverse is
-also true.
+## Run in development
+
+`npm run dev` launches the full desktop app. `npm run dev:web` is the quickest way to work on the
+interface, but the tray, the session popover and the desktop-only settings are not available there.
+
+A development run keeps its own presets, history and settings, fully separate from any installed
+copy of the app.
 
 ## Test
 
-```bash
-npm test
-```
-
-Runs the unit tests. This works before `npm install`, because the audio engine has no runtime
-dependencies.
-
-```bash
-npm run typecheck   # tsc and svelte-check
-npm run lint        # ESLint, then Prettier --check
-npm run verify      # a measurement report rather than pass/fail
-```
+`npm test` works even before `npm install`, because the audio engine has no runtime dependencies.
 
 `npm run lint` runs two tools in sequence, so read its output in full.
 
@@ -72,58 +62,47 @@ npm run test:electron
 
 On Linux without a display, run it as `xvfb-run -a npm run test:electron`.
 
-CI runs `test`, `typecheck`, `lint`, `verify`, `build` and the Electron smoke test on every push
-and pull request to `main`. It does not package or publish anything.
+CI runs `test`, `typecheck`, `lint`, `verify`, `build` and the Electron smoke test on every push and
+pull request to `main`. It does not package or publish anything.
 
 ## Build and package
 
-```bash
-npm run build
-```
+> [!WARNING]
+> **Packaging is broken on Windows.** `scripts/dist.mjs` spawns `electron-builder.cmd` without a
+> shell, which current Node refuses to launch, so `npm run dist` and `npm run dist:dir` fail there.
+> macOS and Linux are unaffected.
 
-Compiles the worklets, the renderer and the Electron main process into `out/`.
-
-```bash
-npm run dist
-```
-
-Builds, then packages installers for the current platform into `dist/`:
+`npm run dist` produces, for the platform you run it on:
 
 - macOS: `.dmg` for Apple silicon (arm64) and Intel (x64)
 - Windows: NSIS installer (`.exe`), x64, installed for the current user
 - Linux: AppImage and `.deb`, x64
 
-> **Known issue on Windows.** `scripts/dist.mjs` spawns `electron-builder.cmd` without a shell,
-> which current Node refuses to launch, so `npm run dist` and `npm run dist:dir` fail there.
-> macOS and Linux are unaffected.
+Build each platform's installers on that platform. macOS apps cannot be cross-built at all;
+electron-builder can cross-build some other targets, but this project neither uses nor tests that
+path.
 
-Files are named `fortyhz-<version>-<commit>-<platform>-<arch>.<ext>`. A `-dirty` suffix means
-the tree had uncommitted changes. Package through `npm run dist` (or `dist:dir`), which supplies
-the commit. Running `electron-builder` directly stops with an error.
+Files are named `fortyhz-<version>-<commit>-<platform>-<arch>.<ext>`, with a `-dirty` suffix when
+the tree had uncommitted changes. Always package through `npm run dist` or `dist:dir`, which supply
+the commit; running `electron-builder` directly stops with an error.
 
-```bash
-npm run dist:dir
-```
+Builds are not signed by a trusted publisher. The [install notes](../README.md#install) explain how
+to open an unsigned build on each platform.
 
-Produces only the unpacked app, without installers. This is much faster when you only need to
-know that packaging works.
+### Check the packaged app
 
-Packaging moves the renderer and worklets into an asar archive, and no other test covers that. To
-check that audio still starts in the packaged app, run this after packaging on each platform:
+Packaging moves the renderer and worklets into an asar archive, and no other test covers that. After
+packaging on each platform, check that audio still starts:
 
 ```bash
 npm run dist:dir && npm run test:packaged
 ```
 
-This exercises the unpacked packaged app. It does not install a `.dmg`, run the NSIS installer, or
-start the AppImage, so those paths still need a check by hand on a clean machine.
-
-Builds are not signed by a trusted publisher. The [install notes](../README.md#install) explain how
-to open an unsigned build on each platform.
+This exercises the unpacked app. It does not install the `.dmg`, run the NSIS installer or start
+the AppImage, so those still need a check by hand on a clean machine.
 
 ## Notes
 
-- The repository uses LF line endings everywhere, pinned by `.gitattributes`. A checkout
-  converted to CRLF fails `npm run lint` on every file.
-- For contributor process and the project's traps and invariants, see
-  [AGENTS.md](../AGENTS.md).
+- The repository uses LF line endings everywhere, pinned by `.gitattributes`. A checkout converted
+  to CRLF fails `npm run lint` on every file.
+- For contributor process and the project's traps and invariants, see [AGENTS.md](../AGENTS.md).
