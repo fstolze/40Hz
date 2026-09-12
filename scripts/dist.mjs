@@ -23,13 +23,15 @@ import { buildInfo } from './lib/build-info.mjs';
 // Resolved rather than looked up on PATH: npm puts node_modules/.bin there for
 // `npm run dist`, and nothing does for `node scripts/dist.mjs`, which is a
 // reasonable way to run this and failed with a bare ENOENT.
+//
+// The package's own cli.js, not the node_modules/.bin shim: on Windows that
+// shim is a .cmd file, and spawning one directly (rather than through a shell,
+// which is how a PATH lookup normally runs it) fails with EINVAL rather than
+// launching cmd.exe as its interpreter. cli.js is a plain Node script, so
+// running it through process.execPath sidesteps the shim on every platform
+// and avoids shell:true's argument-escaping risk entirely.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const BUILDER = join(
-  ROOT,
-  'node_modules',
-  '.bin',
-  process.platform === 'win32' ? 'electron-builder.cmd' : 'electron-builder',
-);
+const BUILDER = join(ROOT, 'node_modules', 'electron-builder', 'cli.js');
 
 const { commit } = buildInfo();
 
@@ -40,7 +42,7 @@ const stamp = commit.endsWith('+') ? `${commit.slice(0, -1)}-dirty` : commit;
 const args = process.argv.slice(2);
 console.log(`[dist] packaging ${stamp}${args.length > 0 ? ` (${args.join(' ')})` : ''}`);
 
-const child = spawn(BUILDER, args, {
+const child = spawn(process.execPath, [BUILDER, ...args], {
   stdio: 'inherit',
   env: { ...process.env, FORTYHZ_COMMIT: stamp },
 });
