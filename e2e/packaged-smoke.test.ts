@@ -35,10 +35,13 @@ const LAUNCH_TIMEOUT_MS = 60_000;
  */
 function packagedBinary(): string {
   if (process.platform === 'darwin') {
-    // The directory carries the architecture, and which one depends on the
-    // machine, so it is found rather than assumed.
-    const bundle = readdirSync('dist').find((entry) => entry.startsWith('mac'));
-    if (bundle === undefined) throw new Error('no dist/mac* — run `npm run dist:dir` first');
+    // electron-builder names the x64 output `mac` and the arm64 output
+    // `mac-arm64`, both present after a universal build — so the host's own
+    // arch has to pick between them, not just "starts with mac", or an arm64
+    // machine launches the x64 binary and fails with EBADARCH.
+    const wanted = process.arch === 'arm64' ? 'mac-arm64' : 'mac';
+    const bundle = readdirSync('dist').find((entry) => entry === wanted);
+    if (bundle === undefined) throw new Error(`no dist/${wanted} — run \`npm run dist:dir\` first`);
     return join('dist', bundle, '40 Hz.app', 'Contents', 'MacOS', '40 Hz');
   }
   if (process.platform === 'win32') return join('dist', 'win-unpacked', '40 Hz.exe');
