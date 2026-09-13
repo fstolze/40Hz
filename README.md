@@ -5,9 +5,13 @@
 A 40 Hz track is fixed when it is made. Here the pitch, pulse shape, modulation depth and noise
 underneath are controls you move while you listen, and the envelope and spectrum redraw as you do.
 
-Why 40 Hz? It is a rate that has drawn research attention. Whether listening to it does anything
-for you has not been established, and this app makes no claim that it does. It exists so you can
-generate a clean signal, see what is in it, and experiment on your own terms.
+Why 40 Hz? It's a rate that has [drawn sustained research attention](https://picower.mit.edu/innovations-inventions/genus)
+— largely in Alzheimer's research, using light and sound together under clinical supervision, which is
+not what this app is. Whether listening to 40 Hz audio at your desk does anything for you has not been
+established, and this app makes no claim that it does. It exists because the alternative is a stranger's audio file — you can't see what's in it, you can't
+change it, and you have no way to know whether it's doing what it says. Here you can check.
+
+
 
 **[Download for macOS, Windows or Linux](https://github.com/fstolze/40Hz/releases)** — or
 [build it from source](docs/building.md).
