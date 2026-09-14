@@ -11,8 +11,6 @@ not what this app is. Whether listening to 40 Hz audio at your desk does anythin
 established, and this app makes no claim that it does. It exists because the alternative is a stranger's audio file — you can't see what's in it, you can't
 change it, and you have no way to know whether it's doing what it says. Here you can check.
 
-
-
 **[Download for macOS, Windows or Linux](https://github.com/fstolze/40Hz/releases)** — or
 [build it from source](docs/building.md).
 
