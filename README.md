@@ -31,7 +31,7 @@ change it, and you have no way to know whether it's doing what it says. Here you
 
 A **sound recipe** layers three sources:
 
-- **Entrainment** — the pulsed tone. 20 to 60 Hz, 40 by default, on a carrier from 80 Hz to 1 kHz
+- **Entrainment** — the pulsed tone. 20 to 60 Hz, 40 by default, on a carrier from 80 Hz to 8 kHz
   with a tuner that names the note and snaps to semitones. Sine, Raised cos and Square are named
   points on one envelope family; Duty, Edge and Depth move freely between them.
 - **Two-tone** — two tones separated by the pulse rate. **Binaural** puts one in each ear and needs

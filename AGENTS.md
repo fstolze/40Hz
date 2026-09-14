@@ -362,7 +362,7 @@ gain of a fixed, zero-state LTI filter for any input bounded by one.
 
 Two things about that number. It is computed **per configuration**, not fixed once: the worst chain
 in the whole parameter space bounds at 3.54x and would cost 11 dB everywhere, while the
-configurations people run cost between nothing and 2.6 dB — five of the six offered presets are
+configurations people run cost between nothing and 2.6 dB — six of the seven offered presets are
 unaffected. And it is a bound on a **model** of `BiquadFilterNode`, not on that node; the
 equivalence is established by measuring the real one, and calling `dsp/biquad.ts` "the real chain"
 is how that gap gets assumed away.

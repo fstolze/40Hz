@@ -25,6 +25,7 @@ import {
   type SessionConfiguration,
 } from '../src/audio/configuration.ts';
 import { createNoise } from '../src/audio/dsp/noise.ts';
+import { clampCarrierHz } from '../src/audio/tuning.ts';
 
 /** Install a localStorage stub holding `value` verbatim. */
 function withStored(value: string, run: () => void): void {
@@ -150,6 +151,16 @@ describe('built-in presets', () => {
       expect(typeof createNoise(p.soundscape.color).next()).toBe('number');
       expect(p.masterLevel).toBeLessThanOrEqual(1);
       expect(p.masterLevel).toBeGreaterThan(0);
+    }
+  });
+
+  it('load inside the range their own carrier controls offer', () => {
+    // Outside it, the slider cannot show the preset's carrier and its first
+    // touch clamps the value away — the preset is then unreachable by editing.
+    for (const p of [...BUILT_IN_PRESETS, ...LEGACY_PRESETS]) {
+      expect(`${p.id}: ${clampCarrierHz(p.params.carrierHz)}`).toBe(
+        `${p.id}: ${p.params.carrierHz}`,
+      );
     }
   });
 
