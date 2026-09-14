@@ -296,7 +296,7 @@ export function transitionPeakBound(
  * configuration rather than taken as one global constant: the worst chain in
  * the whole parameter space bounds at 3.54x, which would cost 11 dB
  * everywhere, while the configurations people actually run cost between
- * nothing and 2.6 dB. Five of the six offered presets are unaffected.
+ * nothing and 2.6 dB. Six of the seven offered presets are unaffected.
  *
  * These bounds are summed rather than measured on purpose: this is the value
  * that must never be exceeded, not the value a given moment actually reaches.

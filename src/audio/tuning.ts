@@ -22,16 +22,20 @@ export const A4_HZ = 440;
 const A4_MIDI = 69;
 
 /**
- * The carrier range the UI offers, which is narrower than the engine's.
+ * The carrier range the UI offers.
  *
  * `sanitizeParams` admits 20 Hz to 8 kHz because the engine is correct there.
- * These are a product decision about what is useful as a carrier for a bed:
- * low enough to sit under an ambience, high enough to stay clear of it. This
- * is not a replacement for `sanitizeParams` — that clamp still guards the
+ * The floor is a product decision: low enough to sit under an ambience, and no
+ * lower. The ceiling is the engine's own, because a built-in preset sits on it
+ * — the GENUS-inspired one, at 8 kHz — and a preset outside its own controls'
+ * range loads a value the slider cannot show, which the first touch of that
+ * slider then clamps away. It was 1 kHz before that preset existed.
+ *
+ * This is not a replacement for `sanitizeParams` — that clamp still guards the
  * audio thread against everything that does not come from this UI.
  */
 export const CARRIER_UI_MIN = 80;
-export const CARRIER_UI_MAX = 1000;
+export const CARRIER_UI_MAX = 8000;
 
 /** A reference pitch expressed as cents of detune from A440. */
 export function referenceFromCents(cents: number): number {
@@ -122,18 +126,24 @@ export function clampCarrierHz(freq: number): number {
 /**
  * The Carrier slider's own coordinate: cents from A440.
  *
- * The range is 80–1000 Hz, which is 3.6 octaves. Mapped linearly onto a track
- * of a few hundred pixels, the *bottom* of it — where a carrier usually sits —
- * gets the coarsest resolution in pitch: measured in the running app at
- * 1440x1024, one pixel was 2.644 Hz, which at 220 Hz is **20.7 cents**, a fifth
- * of a semitone, against 3 cents at the top of the range. Every other control
- * in the product is under one step per pixel, and an arrow key here was 0.1 Hz
- * — 2.16 cents at 80 Hz, 0.8 at 220, 0.17 at 1000.
+ * Measured when the range was 80–1000 Hz, 3.6 octaves. Mapped linearly onto a
+ * track of a few hundred pixels, the *bottom* of it — where a carrier usually
+ * sits — got the coarsest resolution in pitch: in the running app at 1440x1024,
+ * one pixel was 2.644 Hz, which at 220 Hz is **20.7 cents**, a fifth of a
+ * semitone, against 3 cents at the top of the range. Every other control in the
+ * product is under one step per pixel, and an arrow key here was 0.1 Hz — 2.16
+ * cents at 80 Hz, 0.8 at 220, 0.17 at 1000.
  *
  * So the control's precision varied by a factor of seven across its own travel,
  * and its pointer and keyboard resolutions differed by a factor of twenty-six.
  * In cents both are uniform: about 12.4 a pixel at that width, one cent an
  * arrow key, everywhere.
+ *
+ * The range is now 80–8000 Hz, 6.6 octaves, which makes the case stronger and
+ * the pointer coarser. Linearly, a pixel at that width would be about 23 Hz —
+ * more than a semitone and a half at 220. In cents it is about 23 a pixel,
+ * still uniform, and the arrow key is still one cent; exact entry and whole
+ * semitones remain the tuner's.
  *
  * **This is a consistency argument and not an audibility one.** A coarse
  * resolution here was once proposed as the explanation for a roughness reported
@@ -174,9 +184,9 @@ export const CARRIER_TRACK_STEP = 1;
  * Whole cents, and outward.
  *
  * A range input can only land on `min + n * step`, so a max that is not on that
- * grid is unreachable — the top of the slider would stop short of 1000 Hz by a
+ * grid is unreachable — the top of the slider would stop short of 8000 Hz by a
  * fraction. Rounding the ends outward keeps both endpoints on the grid, and
- * `carrierHzFromTrack` clamps the overshoot back to exactly 80 and 1000.
+ * `carrierHzFromTrack` clamps the overshoot back to exactly 80 and 8000.
  */
 export const CARRIER_TRACK_MIN = Math.floor(carrierTrackFromHz(CARRIER_UI_MIN));
 export const CARRIER_TRACK_MAX = Math.ceil(carrierTrackFromHz(CARRIER_UI_MAX));

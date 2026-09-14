@@ -51,7 +51,7 @@ A carrier tone multiplied by a pulse envelope, identical in both ears.
 | Control               | What it changes                                    | Range                                                       |
 | --------------------- | -------------------------------------------------- | ----------------------------------------------------------- |
 | **Modulation**        | The pulse rate                                     | 20–60 Hz in 0.5 Hz steps; 40 Hz by default (a 25 ms period) |
-| **Carrier**           | The tone's pitch                                   | 80–1000 Hz                                                  |
+| **Carrier**           | The tone's pitch                                   | 80–8000 Hz                                                  |
 | **Envelope shape**    | Jumps to a named Duty and Edge pair                | Sine, Raised cos, Square; anything else shows **custom**    |
 | **Duty**              | The fraction of each period the pulse occupies     | 5–100%                                                      |
 | **Edge**              | The cosine taper, as a fraction of the pulse width | 0–100%                                                      |
@@ -134,6 +134,7 @@ The readout shows what the engine is producing, not what reaches you.
 | **Monaural beat**              | Two tones 40 Hz apart, mixed into both ears. Works on speakers.                                  |
 | **Binaural beat — headphones** | One tone per ear, 40 Hz apart. Needs headphones.                                                 |
 | **500 Hz AM reference**        | Sinusoidal 40 Hz AM on a 500 Hz carrier, with no noise bed.                                      |
+| **GENUS inspired**             | Hard-gated 1.25 ms bursts of an 8 kHz tone, 40 a second, with no noise bed. Harsh.               |
 
 Built-in presets cannot be changed or deleted; **Save as…** makes a named copy. Your own presets
 show **Modified** once changed, **Save** updates them in place, and **Delete** asks before removing

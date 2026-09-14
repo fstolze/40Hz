@@ -27,6 +27,7 @@ import {
   snapToNearestNote,
   stepBySemitones,
 } from '../src/audio/tuning.ts';
+import { sanitizeParams } from '../src/audio/dsp/entrainment-core.ts';
 
 describe('pitch conversion', () => {
   it('anchors A4 at the reference', () => {
@@ -96,12 +97,20 @@ describe('a non-440 reference', () => {
 describe('frequency-relative controls clamp', () => {
   it('brings anything into the UI range', () => {
     expect(clampCarrierHz(20)).toBe(CARRIER_UI_MIN);
-    expect(clampCarrierHz(8000)).toBe(CARRIER_UI_MAX);
+    expect(clampCarrierHz(20000)).toBe(CARRIER_UI_MAX);
     expect(clampCarrierHz(220)).toBe(220);
   });
 
   it('answers a non-finite request with the floor rather than NaN', () => {
     expect(clampCarrierHz(Number.NaN)).toBe(CARRIER_UI_MIN);
+  });
+
+  it('offers nothing the engine would move', () => {
+    // The UI range is a policy inside the engine's, never beyond it: a ceiling
+    // above the sanitize clamp would show one frequency and play another.
+    for (const hz of [CARRIER_UI_MIN, CARRIER_UI_MAX]) {
+      expect(sanitizeParams({ carrierHz: hz }).carrierHz).toBe(hz);
+    }
   });
 });
 
@@ -120,7 +129,7 @@ describe('note-relative controls refuse rather than clamp', () => {
   });
 
   it('returns null instead of a different pitch class at the ceiling', () => {
-    expect(stepBySemitones(880, 12)).toBe(null);
+    expect(stepBySemitones(4400, 12)).toBe(null);
     expect(stepBySemitones(CARRIER_UI_MAX, 1)).toBe(null);
   });
 
@@ -232,7 +241,7 @@ describe("the Carrier slider's track", () => {
     // since the interval measured depends only on where the track lands — the
     // pair being inverses is the next test's job, not this one's.
     // Strictly inside the ends: the bounds are rounded outward and clamped, so
-    // the first and last positions are pinned to 80 and 1000 rather than to the
+    // the first and last positions are pinned to 80 and 8000 rather than to the
     // cent the grid would put them on. That clamp is the previous test's subject.
     const ends = CARRIER_TRACK_MAX - CARRIER_TRACK_STEP - 1;
     for (let at = CARRIER_TRACK_MIN + 1; at <= ends; at += 331) {
@@ -269,7 +278,7 @@ describe("the Carrier slider's track", () => {
     // Dragging away and back must not leave the carrier somewhere else, and
     // rendering the control must not move it: the position is derived from the
     // value on every render, so a lossy round trip would drift.
-    for (const hz of [80, 220, 261.6255653005986, 440, 1000]) {
+    for (const hz of [80, 220, 261.6255653005986, 440, 1000, 8000]) {
       expect(carrierHzFromTrack(carrierTrackFromHz(hz))).toBeCloseTo(hz, 9);
     }
   });

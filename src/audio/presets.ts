@@ -116,6 +116,32 @@ export const BUILT_IN_PRESETS: Preset[] = [
     { gain: 0 },
     0.5,
   ),
+  /*
+   * Follows the pulse timing of the auditory stimulus in the GENUS mouse work —
+   * 1 ms tones at 10 kHz, 40 a second (Martorell et al., Cell 2019) — as far as
+   * the engine reaches: 8 kHz is its carrier ceiling and 5% the Duty slider's
+   * floor, so each pulse is 1.25 ms. It is not that protocol. The level is
+   * uncalibrated, and the human studies paired the sound with synchronized
+   * light through their own device. The name says "inspired" for that reason,
+   * and the copy must never drift towards claiming the protocol or an effect.
+   */
+  preset(
+    'genus-inspired',
+    'GENUS inspired',
+    'Hard-gated 1.25 ms bursts of an 8 kHz tone, 40 a second, with no bed. Modelled on a published mouse stimulus, not a reproduction of it; harsh over long sessions.',
+    {
+      modulationHz: 40,
+      carrierHz: 8000,
+      duty: 0.05,
+      edge: 0,
+      depth: 1,
+      amGain: 0.25,
+      twoToneMode: 'off',
+      twoToneGain: 0,
+    },
+    { gain: 0 },
+    0.4,
+  ),
 ];
 
 /**

@@ -620,7 +620,7 @@ would spend CI minutes to produce what a local `npm run dist` produces already.
 This is what makes signing a later decision rather than a blocking one: there is no unsigned
 release channel quietly handing builds to anyone.
 
-**Which presets are offered, and what may they say?** → **Six, described as signals, not
+**Which presets are offered, and what may they say?** → **Seven, described as signals, not
 outcomes.**
 
 Balanced pulse (the default), Gentle AM, Subtle pulse, Monaural beat, Binaural beat — headphones,
@@ -642,6 +642,15 @@ preset that engages the headroom guard, which is what the guard's tests and list
 
 The default did not move. Sinusoidal AM was proposed as the default and withdrawn: comfort is a
 fair case for it, but not an evidence-based one.
+
+GENUS inspired was added afterwards: 1.25 ms hard-gated bursts of an 8 kHz tone, 40 a second, with
+no bed. It follows the pulse timing of the auditory stimulus in the GENUS mouse work — 1 ms tones at
+10 kHz — as closely as the engine and the Duty slider reach, and it is not that protocol: the level
+is uncalibrated, and the human studies paired sound with synchronized light on their own device.
+The name says "inspired" for that reason. It brings square gating back into the picker despite the
+comfort decision above, so its description says it is harsh. It needed the Carrier control's
+ceiling raised from 1 kHz to the engine's 8 kHz, since a built-in outside its own controls' range
+cannot be edited without the slider clamping its carrier away.
 
 ### Settled during step 4
 
