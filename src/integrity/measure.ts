@@ -19,7 +19,9 @@
  * check that expected them to would fail on a correct graph at a different
  * volume. They are also phase-invariant, which matters because a captured
  * window starts wherever the ring happened to be while the oracle starts at
- * phase zero.
+ * phase zero. Invariant to where the window starts is not invariant to where
+ * the carrier sits under its envelope, though; the spectrum comparison has to
+ * model that separately, in `carrierAlignments`.
  *
  * **Why against the oracle rather than the commanded numbers.** `depth` is not
  * the modulation index except for the sine shape, where
@@ -39,7 +41,7 @@ import {
 } from '../audio/analysis/metrics.ts';
 import { amplitudeAt, fft, hann, prevPowerOfTwo } from '../audio/analysis/fft.ts';
 import { renderOffline } from '../audio/dsp/render-offline.ts';
-import type { EntrainmentParams } from '../audio/dsp/entrainment-core.ts';
+import { createState, type EntrainmentParams } from '../audio/dsp/entrainment-core.ts';
 import { checkedFinding, type Finding } from './findings.ts';
 
 export interface Capture {
@@ -81,7 +83,8 @@ export const TOLERANCE = {
    *
    * Measured rather than chosen. Across eight carriers, three modulation rates,
    * 400 capture offsets and a trip through Float32, a healthy render never
-   * exceeded 2.8 dB — and that worst case is at 0.5 Hz, where a two-second
+   * exceeded 2.8 dB — once the carrier's alignment under its envelope is taken
+   * as a free parameter, which `carrierAlignments` explains — and that worst case is at 0.5 Hz, where a two-second
    * window holds a single period and its shape genuinely depends on where it
    * started. The subtlest fault this has to catch, a right-ear tone one hertz
    * out, reads 12.8 dB. Eight sits between them with room on both sides.
@@ -448,10 +451,7 @@ export function measureEntrainment(capture: Capture, params: EntrainmentParams):
 
   findings.push(
     spectrumFinding(
-      Math.max(
-        spectralDeviationDb(left, reference.left),
-        spectralDeviationDb(right, reference.right),
-      ),
+      spectralDeviationDb([left, right], carrierAlignments(params, sampleRate, frames, reference)),
       bandWidthHz(frames, sampleRate),
     ),
   );
@@ -517,8 +517,212 @@ function bandEnergies(signal: Float64Array, frames: number): Float64Array {
 }
 
 /**
- * The worst disagreement between a channel and its reference, across the
- * spectrum, in dB.
+ * The reference, with the carrier's alignment under its envelope left open.
+ *
+ * `renderOffline` starts the carrier and the modulator together at phase zero.
+ * The live engine does that only until the carrier first moves: a glide is
+ * phase-continuous by design, so it leaves the carrier at whatever alignment it
+ * ended on, and that alignment then holds for as long as neither frequency
+ * changes. Offsetting the window cannot recover it, since both phases advance
+ * together — which is why the capture-offset sweeps behind `TOLERANCE` never
+ * saw it.
+ *
+ * For most carriers a magnitude spectrum cannot see the alignment either. It
+ * can when the carrier is a whole or half multiple of the modulation rate,
+ * because the envelope's lower sidebands then fold below zero onto the same
+ * frequencies as the upper ones, and the two add or cancel by an amount the
+ * alignment decides. 220 Hz under 40 is 5.5 periods and folds onto 20, 60 and
+ * 100 Hz; 8 kHz is 200 and folds onto every multiple of 40. Swept over 32
+ * alignments at five sample rates, a healthy Balanced pulse read up to 15.1 dB
+ * and the GENUS-inspired preset 16.0 — warnings about correct output, reached
+ * by doing nothing more than switching presets while playing.
+ *
+ * Every alignment is covered exactly, not by a search over renders. The AM path
+ * is `sin(carrier + φ) · envelope`, which is `cos φ` times its render at phase
+ * zero plus `sin φ` times its render a quarter cycle on; the transform is
+ * linear, so each band's energy is a quadratic in `cos φ` and `sin φ` whose six
+ * coefficients are summed once. Trying an alignment costs a pass over the bands.
+ *
+ * **Only the AM path's alignment.** The tones are held as rendered. They restart
+ * at phase zero whenever they switch on, wherever the carrier is, so a recipe
+ * running both paths has a second unknown this does not model — and it moves
+ * the envelope and level readings as well as this one.
+ */
+interface AlignedReference {
+  /** The tones alone: the reference with its AM path taken out. */
+  tones: Float64Array;
+  /** The AM path at the reference's alignment. */
+  inPhase: Float64Array;
+  /** The AM path a quarter carrier cycle on. */
+  quadrature: Float64Array;
+}
+
+function carrierAlignments(
+  params: EntrainmentParams,
+  sampleRate: number,
+  frames: number,
+  reference: { left: Float64Array; right: Float64Array },
+): AlignedReference[] {
+  // With no AM path there is nothing to align, and the reference is the answer.
+  if (params.amGain <= 0) {
+    return [reference.left, reference.right].map((channel) => ({
+      tones: channel,
+      inPhase: new Float64Array(frames),
+      quadrature: new Float64Array(frames),
+    }));
+  }
+
+  const amOnly: EntrainmentParams = { ...params, twoToneMode: 'off' };
+  const inPhase =
+    params.twoToneMode === 'off' ? reference : renderOffline(amOnly, sampleRate, frames);
+  const turned = createState();
+  turned.carrierPhase = 0.25;
+  const quadrature = renderOffline(amOnly, sampleRate, frames, 0, turned);
+
+  return (['left', 'right'] as const).map((side) => {
+    const tones = new Float64Array(frames);
+    for (let i = 0; i < frames; i += 1) tones[i] = reference[side][i] - inPhase[side][i];
+    return { tones, inPhase: inPhase[side], quadrature: quadrature[side] };
+  });
+}
+
+/**
+ * `|t + c·p + s·q|²`, summed, as its six coefficients.
+ *
+ * Kept per band for the spectrum and as one total for the window's mean square,
+ * so the band levels and the level they are normalised by follow the same
+ * alignment. Columns rather than an object per band: the forms are evaluated
+ * about ninety times each, and that loop is most of this check's cost.
+ */
+interface EnergyForms {
+  tt: Float64Array;
+  pp: Float64Array;
+  qq: Float64Array;
+  tp: Float64Array;
+  tq: Float64Array;
+  pq: Float64Array;
+}
+
+function energyForms(length: number): EnergyForms {
+  return {
+    tt: new Float64Array(length),
+    pp: new Float64Array(length),
+    qq: new Float64Array(length),
+    tp: new Float64Array(length),
+    tq: new Float64Array(length),
+    pq: new Float64Array(length),
+  };
+}
+
+function energyAt(f: EnergyForms, k: number, c: number, s: number): number {
+  return (
+    f.tt[k] + c * c * f.pp[k] + s * s * f.qq[k] + 2 * (c * f.tp[k] + s * f.tq[k] + c * s * f.pq[k])
+  );
+}
+
+interface ChannelForms {
+  /** The capture's own band levels, squared and normalised as `bandEnergies` does. */
+  measured: Float64Array;
+  bands: EnergyForms;
+  /** Mean square of the reference window, in its single slot. */
+  meanSquare: EnergyForms;
+  /** Scratch for one alignment's band levels, reused across all of them. */
+  scratch: Float64Array;
+}
+
+function isSilent(signal: Float64Array, n: number): boolean {
+  for (let i = 0; i < n; i += 1) if (signal[i] !== 0) return false;
+  return true;
+}
+
+function channelForms(measured: Float64Array, aligned: AlignedReference, n: number): ChannelForms {
+  // A zero buffer transforms to zeros; skipping it is a third of the transforms
+  // for every recipe that plays only one path.
+  const silent = { re: new Float64Array(n), im: new Float64Array(n) };
+  const spectrum = (signal: Float64Array) => {
+    if (isSilent(signal, n)) return silent;
+    const re = Float64Array.from(hann(Float64Array.from(signal.subarray(0, n))));
+    const im = new Float64Array(n);
+    fft(re, im);
+    return { re, im };
+  };
+  const t = spectrum(aligned.tones);
+  const p = spectrum(aligned.inPhase);
+  const q = spectrum(aligned.quadrature);
+
+  const count = Math.floor(n / 2 / BINS_PER_BAND);
+  const bands = energyForms(count);
+  for (let k = 0; k < count; k += 1) {
+    for (let i = k * BINS_PER_BAND; i < (k + 1) * BINS_PER_BAND; i += 1) {
+      bands.tt[k] += t.re[i] * t.re[i] + t.im[i] * t.im[i];
+      bands.pp[k] += p.re[i] * p.re[i] + p.im[i] * p.im[i];
+      bands.qq[k] += q.re[i] * q.re[i] + q.im[i] * q.im[i];
+      bands.tp[k] += t.re[i] * p.re[i] + t.im[i] * p.im[i];
+      bands.tq[k] += t.re[i] * q.re[i] + t.im[i] * q.im[i];
+      bands.pq[k] += p.re[i] * q.re[i] + p.im[i] * q.im[i];
+    }
+  }
+
+  const meanSquare = energyForms(1);
+  const { tones, inPhase, quadrature } = aligned;
+  for (let i = 0; i < n; i += 1) {
+    meanSquare.tt[0] += tones[i] * tones[i];
+    meanSquare.pp[0] += inPhase[i] * inPhase[i];
+    meanSquare.qq[0] += quadrature[i] * quadrature[i];
+    meanSquare.tp[0] += tones[i] * inPhase[i];
+    meanSquare.tq[0] += tones[i] * quadrature[i];
+    meanSquare.pq[0] += inPhase[i] * quadrature[i];
+  }
+  for (const column of Object.values(meanSquare)) column[0] /= n;
+
+  const measuredLevels = bandEnergies(measured, n);
+  for (let k = 0; k < measuredLevels.length; k += 1) measuredLevels[k] *= measuredLevels[k];
+  return { measured: measuredLevels, bands, meanSquare, scratch: new Float64Array(count) };
+}
+
+/**
+ * Worst band ratio, squared, for one channel at one alignment.
+ *
+ * Squared throughout, so the logarithm is taken once per answer rather than
+ * once per band per alignment.
+ */
+function worstRatioSquared(forms: ChannelForms, c: number, s: number, n: number): number {
+  const scale = n * n * Math.max(energyAt(forms.meanSquare, 0, c, s), 1e-24);
+  const reference = forms.scratch;
+
+  let peak = 0;
+  for (let k = 0; k < reference.length; k += 1) {
+    const value = Math.max(energyAt(forms.bands, k, c, s), 0) / scale;
+    reference[k] = value;
+    if (value > peak) peak = value;
+  }
+  // Bands more than 40 dB below the loudest are where quantisation and window
+  // skirts live; both sides clamp there, so absent compares equal to absent.
+  const floor = peak * 1e-4;
+
+  let worst = 1;
+  for (let k = 0; k < reference.length; k += 1) {
+    const a = Math.max(forms.measured[k], floor);
+    const b = Math.max(reference[k], floor);
+    const ratio = a > b ? a / b : b / a;
+    if (ratio > worst) worst = ratio;
+  }
+  return worst;
+}
+
+/**
+ * Alignments tried: a coarse ring, then a fine one around the best of it.
+ *
+ * Swept over the presets at five sample rates, 64 then 16 either side leaves a
+ * healthy capture within 1.5 dB of its closest alignment — under the 2.8 dB the
+ * tolerance was measured against — for about ninety evaluations.
+ */
+const ALIGNMENT_STEPS = 24;
+const ALIGNMENT_REFINE = 6;
+
+/**
+ * The worst disagreement between the capture and its reference, across the
+ * spectrum, in dB — against the closest carrier alignment.
  *
  * The check that notices content in the wrong *place*. Everything else here
  * asks about levels and shapes, and a tone at the wrong frequency satisfies
@@ -529,26 +733,45 @@ function bandEnergies(signal: Float64Array, frames: number): Float64Array {
  * spectrum against the reference render catches a component that moved,
  * vanished, or arrived uninvited, without this module having to re-derive
  * where the DSP puts things.
+ *
+ * The closest alignment is the honest comparison, not a lenient one. Every
+ * alignment is output the engine correctly produces, so a capture is wrong only
+ * by as much as it differs from all of them. One alignment serves both ears,
+ * because the AM path is the same in both. And turning the carrier moves energy
+ * only among frequencies the envelope already occupies, so no alignment can
+ * account for a component somewhere it should not be.
  */
-function spectralDeviationDb(measured: Float64Array, reference: Float64Array): number {
-  const n = Math.min(prevPowerOfTwo(measured.length), prevPowerOfTwo(reference.length));
+function spectralDeviationDb(measured: Float64Array[], aligned: AlignedReference[]): number {
+  const n = Math.min(
+    ...measured.map((m) => prevPowerOfTwo(m.length)),
+    ...aligned.map((a) => prevPowerOfTwo(a.tones.length)),
+  );
   if (n < 2 * BINS_PER_BAND) return 0;
 
-  const a = bandEnergies(measured, n);
-  const b = bandEnergies(reference, n);
+  const channels = measured.map((m, i) => channelForms(m, aligned[i], n));
+  const worstAt = (angle: number) => {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    let worst = 1;
+    for (const forms of channels) worst = Math.max(worst, worstRatioSquared(forms, c, s, n));
+    return worst;
+  };
 
-  let peak = 0;
-  for (const value of b) if (value > peak) peak = value;
-  // Bands more than 40 dB below the loudest are where quantisation and window
-  // skirts live; both sides clamp there, so absent compares equal to absent.
-  const floor = peak * Math.pow(10, -40 / 20);
-
-  let worst = 0;
-  for (let k = 0; k < a.length; k += 1) {
-    const difference = Math.abs(20 * Math.log10(Math.max(a[k], floor) / Math.max(b[k], floor)));
-    if (difference > worst) worst = difference;
+  const step = (2 * Math.PI) / ALIGNMENT_STEPS;
+  let bestAngle = 0;
+  let best = worstAt(0);
+  for (let j = 1; j < ALIGNMENT_STEPS; j += 1) {
+    const value = worstAt(j * step);
+    if (value < best) [best, bestAngle] = [value, j * step];
   }
-  return worst;
+  const centre = bestAngle;
+  for (let j = -ALIGNMENT_REFINE; j <= ALIGNMENT_REFINE; j += 1) {
+    const angle = centre + (j * step) / ALIGNMENT_REFINE;
+    const value = worstAt(angle);
+    if (value < best) best = value;
+  }
+  // Squared ratios, so ten rather than twenty.
+  return 10 * Math.log10(best);
 }
 
 /**

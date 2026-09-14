@@ -14,7 +14,11 @@ import { measureEntrainment, measureMaster, TOLERANCE } from '../src/integrity/m
 import { renderOffline } from '../src/audio/dsp/render-offline.ts';
 import { amplitudeAt } from '../src/audio/analysis/fft.ts';
 import { rms } from '../src/audio/analysis/metrics.ts';
-import { DEFAULT_PARAMS, type EntrainmentParams } from '../src/audio/dsp/entrainment-core.ts';
+import {
+  DEFAULT_PARAMS,
+  createState,
+  type EntrainmentParams,
+} from '../src/audio/dsp/entrainment-core.ts';
 import { checkedScopes, recordedStatus, type Finding } from '../src/integrity/findings.ts';
 import { BUILT_IN_PRESETS, LEGACY_PRESETS } from '../src/audio/presets.ts';
 
@@ -106,6 +110,40 @@ describe('the entrainment tap against its reference', () => {
         );
         const label = `${carrierHz} Hz at offset ${offset}`;
         expect(`${label}: ${finding.status}`).toBe(`${label}: ok`);
+      }
+    }
+  });
+
+  it('stays quiet wherever a glide left the carrier under its envelope', () => {
+    // The offsets above move the window, and the carrier and envelope move with
+    // it — so none of them could reach this. A glide is phase-continuous, which
+    // leaves the carrier at an arbitrary alignment under the envelope once it
+    // stops, and the reference always starts both at zero. Where the carrier is
+    // a whole or half multiple of the rate, the folded sidebands add or cancel by
+    // that alignment: switching to GENUS inspired while playing warned at 11 dB,
+    // and Balanced pulse, the default, reached 15.
+    const carriers = [
+      ...BUILT_IN_PRESETS.map((preset) => ({ label: preset.id, p: preset.params })),
+      { label: 'square at 200 Hz', p: params({ carrierHz: 200, duty: 0.1, edge: 0 }) },
+    ];
+    for (const { label, p } of carriers) {
+      for (const alignment of [0.13, 0.3, 0.55, 0.81]) {
+        const state = createState();
+        state.carrierPhase = alignment;
+        const long = renderOffline(p, SR, FRAMES + 613, 128, state);
+        const finding = byId(
+          measureEntrainment(
+            {
+              left: Float32Array.from(long.left.subarray(613)),
+              right: Float32Array.from(long.right.subarray(613)),
+              sampleRate: SR,
+            },
+            p,
+          ),
+          'graph-spectrum',
+        );
+        const at = `${label} at ${alignment}`;
+        expect(`${at}: ${finding.status}`).toBe(`${at}: ok`);
       }
     }
   });
