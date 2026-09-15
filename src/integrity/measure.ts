@@ -40,7 +40,7 @@ import {
   rms,
   type EnvelopeMetrics,
 } from '../audio/analysis/metrics.ts';
-import { amplitudeAt, fft, hann, prevPowerOfTwo } from '../audio/analysis/fft.ts';
+import { amplitudeAt, fft, hann, ifft, prevPowerOfTwo } from '../audio/analysis/fft.ts';
 import { renderOffline } from '../audio/dsp/render-offline.ts';
 import { createState, type EntrainmentParams } from '../audio/dsp/entrainment-core.ts';
 import { checkedFinding, type Finding } from './findings.ts';
@@ -400,22 +400,44 @@ export function measureEntrainment(capture: Capture, params: EntrainmentParams):
   /*
    * The reference at the capture's own carrier alignment, not at zero.
    *
-   * The spectrum comparison finds the alignment, and every other reading is
-   * measured against the reference turned to it. Against phase zero, only the
-   * spectrum was protected: an 80 Hz carrier hard-gated at 5%, captured at
-   * 32 kHz with the carrier at 0.4423 of a cycle, timed its envelope at 80 Hz
-   * against 40 and warned, while the spectrum beside it passed. A narrow pulse
-   * has a flat comb of envelope harmonics, and which is tallest is decided by
-   * where the carrier sits under it.
+   * Against phase zero, only the spectrum was protected: an 80 Hz carrier
+   * hard-gated at 5%, captured at 32 kHz with the carrier at 0.4423 of a cycle,
+   * timed its envelope at 80 Hz against 40 and warned, while the spectrum
+   * beside it passed. A narrow pulse has a flat comb of envelope harmonics, and
+   * which is tallest is decided by where the carrier sits under it.
+   *
+   * The alignment comes from the waveform, not from the spectrum comparison.
+   * Magnitudes cannot always tell alignments apart — under shallow modulation
+   * several are identical to the last decimal — and the spectrum's search then
+   * picked one by rounding, which timed a 60 Hz envelope against a 180 Hz
+   * reference. The same fit finds where in its period the window started, and
+   * the reference is read from there too: some readings move with the start
+   * alone. A shallow 10% pulse on a 120 Hz carrier read its envelope at 40 Hz
+   * from one start and 120 Hz from another, and sidebands 40 dB down read
+   * differently by leakage — none of which any alignment could have answered.
+   * The spectrum is still judged against its closest alignment, which is a
+   * true statement whichever of several equals it lands on.
+   *
+   * Swept over healthy captures through Float32 at window offsets 0 and 613:
+   * 2,560 AM recipes (carriers 80 Hz to 8 kHz, duty 2% to 50%, hard and tapered
+   * edges, 22.05 to 96 kHz, four alignments, every preset) and 2,304 shallow
+   * ones (depth 2% to 30%, rates 20 to 60 Hz, carriers 80 Hz to 1 kHz). Against
+   * phase zero those warned 71 and 426 times, against the spectrum's alignment
+   * 4 and 246, and here neither warns. Every seeded fault in the detection
+   * comparison is still caught, apart from the corner `waveformAlignment`
+   * records.
    */
+  const lead = Math.min(Math.ceil(sampleRate / params.modulationHz), Math.floor(frames / 2));
   const aligned = carrierAlignments(
     params,
     sampleRate,
-    frames,
-    renderOffline(params, sampleRate, frames),
+    frames + lead,
+    renderOffline(params, sampleRate, frames + lead),
   );
-  const alignment = closestAlignment([left, right], aligned);
-  const reference = referenceAt(aligned, alignment.angle);
+  const found = waveformAlignment([left, right], aligned, frames, lead, params);
+  const window = aligned.map((part) => windowOf(part, found.offset, frames));
+  const alignment = closestAlignment([left, right], window);
+  const reference = referenceAt(window, found.angle);
 
   const findings: Finding[] = [];
 
@@ -727,13 +749,10 @@ function worstRatioSquared(forms: ChannelForms, c: number, s: number, n: number)
 /**
  * Alignments tried: a coarse ring, then a fine one around the best of it.
  *
- * The alignment found here is also the one every other reading is compared at,
- * so it has to be close as well as good enough for the spectrum. A narrow pulse
- * is where that bites: at 24 then 6, 2,240 healthy AM captures — carriers 80 Hz
- * to 8 kHz, duty 2% to 50%, hard and tapered edges, 22.05 to 96 kHz, seven
- * alignments, and every preset — still warned three times, all at 2% duty, on
- * envelope rate and spectrum. At 64 then 16 none do. 128 and 360 steps change
- * nothing further and cost 54 and 96 ms a pass at 48 kHz, against 35 here.
+ * For the spectrum alone: every other reading is compared at the alignment
+ * `waveformAlignment` reads from the waveform. A narrow pulse is where the
+ * ring's spacing shows — at 24 then 6, a 2% hard-gated pulse on 220 Hz at
+ * 32 kHz read 9.9 dB at one alignment, and at 64 then 16 it reads 0.1.
  */
 const ALIGNMENT_STEPS = 64;
 const ALIGNMENT_REFINE = 16;
@@ -793,6 +812,180 @@ function closestAlignment(
   }
   // Squared ratios, so ten rather than twenty.
   return { angle: bestAngle, deviationDb: 10 * Math.log10(best) };
+}
+
+/** One reference part's window, starting `offset` frames in. */
+function windowOf(part: AlignedReference, offset: number, frames: number): AlignedReference {
+  return {
+    tones: part.tones.subarray(offset, offset + frames),
+    inPhase: part.inPhase.subarray(offset, offset + frames),
+    quadrature: part.quadrature.subarray(offset, offset + frames),
+  };
+}
+
+/**
+ * The carrier alignment the capture actually has, and where it started, read
+ * from its waveform.
+ *
+ * Magnitude spectra cannot always say. A capture is the reference turned to
+ * some alignment and started somewhere in its modulation period, so it should
+ * be `a·inPhase + b·quadrature` (with the tones alongside) read from some
+ * offset into the reference. For each offset in one period, least squares
+ * gives `a` and `b` and how much of the capture they explain; the offset that
+ * explains most is where the window started, and `atan2(b, a)` is the
+ * alignment. Offsets beyond one period add nothing: a whole period later the
+ * envelope is where it was and only the carrier has moved, which is the
+ * alignment's to absorb.
+ *
+ * Every offset at once, by cross-correlation through the transform: the
+ * capture against each reference part, and the parts against each other by
+ * running sums. The two ears carry the same AM path, so their sum is fitted.
+ * The fit is over all but the last `lead` frames of the capture, so every
+ * offset has reference to read from.
+ *
+ * Only the angle and the offset are taken from it, never the amplitudes. A
+ * fitted amplitude would scale the reference towards whatever the capture
+ * holds — a tone that lost its level included — and the readings compare
+ * shapes precisely so that level cannot hide a fault.
+ *
+ * With no AM path there is no angle to find, and the tones alone still place
+ * the window.
+ *
+ * A fractional start is left at the nearest sample, which is not exact: where
+ * the modulation period is not a whole number of samples, a hard-gated edge can
+ * land half a sample from where the capture has it, and a 5% square on 80 Hz at
+ * 22.05 kHz leaves 4.9% of its energy unexplained that way. It moves no reading
+ * past its tolerance — the sweeps recorded in `measureEntrainment` include that
+ * case — but it is why the fit's residual cannot double as a verdict: some
+ * faults leave less than that.
+ *
+ * **What it gives up.** A capture that matches no alignment is still compared
+ * at the one that explains it best, and a less modulated reference is the one
+ * that explains an unmodulated capture best. So in the corner where alignment
+ * alone swings the readings by more than a fault does — shallow modulation on
+ * a carrier at a whole multiple of the rate — some faults read as a legitimate
+ * alignment: a 10% pulse on 120 Hz at 60 Hz with its modulation removed passes,
+ * where the phase-zero reference flagged it on the sidebands. That reference
+ * also flagged half of the healthy captures there, and the readings of the
+ * unmodulated capture fall inside the range the healthy alignments produce, so
+ * no reference built from correct output could have told them apart at these
+ * tolerances. At 40% depth, or with a hard 5% pulse, detection is unchanged.
+ */
+function waveformAlignment(
+  measured: Float64Array[],
+  aligned: AlignedReference[],
+  frames: number,
+  lead: number,
+  params: EntrainmentParams,
+): { angle: number; offset: number } {
+  const period = lead;
+  const span = frames - period;
+
+  // The fit reads only the first `frames` of each part: the capture's span plus
+  // the furthest offset. The extra period rendered past that is for the window
+  // cut afterwards, and keeping it out keeps the transform at the capture's size.
+  const sum = (pick: (channel: number) => Float64Array, length = frames) => {
+    const out = new Float64Array(length);
+    for (let c = 0; c < measured.length; c += 1) {
+      const from = pick(c);
+      for (let i = 0; i < length; i += 1) out[i] += from[i];
+    }
+    return out;
+  };
+  const capture = sum((c) => measured[c]);
+  const hasAm = params.amGain > 0;
+  const parts = [
+    ...(hasAm ? [sum((c) => aligned[c].inPhase), sum((c) => aligned[c].quadrature)] : []),
+    sum((c) => aligned[c].tones),
+  ].filter((part) => !isSilent(part, frames));
+  if (parts.length === 0 || period < 1) return { angle: 0, offset: 0 };
+
+  let size = 1;
+  while (size < frames) size *= 2;
+  const transform = (signal: Float64Array, length: number) => {
+    const re = new Float64Array(size);
+    re.set(signal.subarray(0, length));
+    const im = new Float64Array(size);
+    fft(re, im);
+    return { re, im };
+  };
+
+  // Σ capture[i]·part[i + offset] over the span, for every offset.
+  const x = transform(capture, span);
+  const correlations = parts.map((part) => {
+    const z = transform(part, frames);
+    const re = new Float64Array(size);
+    const im = new Float64Array(size);
+    for (let k = 0; k < size; k += 1) {
+      re[k] = x.re[k] * z.re[k] + x.im[k] * z.im[k];
+      im[k] = x.re[k] * z.im[k] - x.im[k] * z.re[k];
+    }
+    ifft(re, im);
+    return re;
+  });
+
+  // Σ part_j·part_k over the span starting at each offset, from running sums.
+  const running = (a: Float64Array, b: Float64Array) => {
+    const out = new Float64Array(frames + 1);
+    for (let i = 0; i < frames; i += 1) out[i + 1] = out[i] + a[i] * b[i];
+    return out;
+  };
+  const r = parts.length;
+  const gram: Float64Array[][] = parts.map((a, j) =>
+    parts.map((b, k) => (k >= j ? running(a, b) : new Float64Array(0))),
+  );
+
+  let bestExplained = -Infinity;
+  let best = { angle: 0, offset: 0 };
+  const g = new Float64Array(r * r);
+  const v = new Float64Array(r);
+  for (let offset = 0; offset <= period; offset += 1) {
+    for (let j = 0; j < r; j += 1) {
+      v[j] = correlations[j][offset];
+      for (let k = j; k < r; k += 1) {
+        const value = gram[j][k][offset + span] - gram[j][k][offset];
+        g[j * r + k] = value;
+        g[k * r + j] = value;
+      }
+    }
+    const solved = solveSymmetric(g, v, r);
+    if (solved === null) continue;
+    let explained = 0;
+    for (let j = 0; j < r; j += 1) explained += solved[j] * v[j];
+    if (explained > bestExplained) {
+      bestExplained = explained;
+      best = { angle: hasAm ? Math.atan2(solved[1], solved[0]) : 0, offset };
+    }
+  }
+  return best;
+}
+
+/** `g·x = v` for a small symmetric `g`, or null when it is singular. */
+function solveSymmetric(g: Float64Array, v: Float64Array, r: number): Float64Array | null {
+  const a = Float64Array.from(g);
+  const x = Float64Array.from(v);
+  for (let col = 0; col < r; col += 1) {
+    let pivot = col;
+    for (let row = col + 1; row < r; row += 1) {
+      if (Math.abs(a[row * r + col]) > Math.abs(a[pivot * r + col])) pivot = row;
+    }
+    const scale = Math.abs(a[pivot * r + pivot]);
+    if (!(scale > 1e-12 * Math.max(1, Math.abs(a[0])))) return null;
+    if (pivot !== col) {
+      for (let k = 0; k < r; k += 1) {
+        [a[col * r + k], a[pivot * r + k]] = [a[pivot * r + k], a[col * r + k]];
+      }
+      [x[col], x[pivot]] = [x[pivot], x[col]];
+    }
+    for (let row = 0; row < r; row += 1) {
+      if (row === col) continue;
+      const factor = a[row * r + col] / a[col * r + col];
+      for (let k = col; k < r; k += 1) a[row * r + k] -= factor * a[col * r + k];
+      x[row] -= factor * x[col];
+    }
+  }
+  for (let j = 0; j < r; j += 1) x[j] /= a[j * r + j];
+  return x;
 }
 
 /**

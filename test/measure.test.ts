@@ -10,7 +10,12 @@
  */
 
 import { describe, it, expect } from './helpers/expect.ts';
-import { measureEntrainment, measureMaster, TOLERANCE } from '../src/integrity/measure.ts';
+import {
+  captureFramesFor,
+  measureEntrainment,
+  measureMaster,
+  TOLERANCE,
+} from '../src/integrity/measure.ts';
 import { renderOffline } from '../src/audio/dsp/render-offline.ts';
 import { amplitudeAt } from '../src/audio/analysis/fft.ts';
 import { rms } from '../src/audio/analysis/metrics.ts';
@@ -144,6 +149,42 @@ describe('the entrainment tap against its reference', () => {
         const at = `${label} at ${alignment}`;
         expect(`${at}: ${statuses(findings)}`).toBe(`${at}: ok,ok,ok,ok,ok,ok,ok`);
       }
+    }
+  });
+
+  it('reads the alignment from the waveform when magnitudes cannot tell', () => {
+    // Found in review. Under shallow modulation several alignments have the same
+    // magnitude spectrum to the last decimal, and the spectrum's search picked
+    // one by rounding — a 60 Hz envelope timed against a 180 Hz reference. The
+    // second case moves with the window's start alone: from 613 frames in it
+    // read 120 Hz against a reference that, started at zero, reads 40.
+    const cases = [
+      {
+        rate: 44100,
+        p: params({ modulationHz: 60, carrierHz: 120, duty: 0.08, edge: 1, depth: 0.1 }),
+        alignment: 0.3,
+      },
+      {
+        rate: 44100,
+        p: params({ modulationHz: 40, carrierHz: 120, duty: 0.08, edge: 1, depth: 0.1 }),
+        alignment: 0.4423,
+      },
+    ];
+    for (const { rate, p, alignment } of cases) {
+      const frames = captureFramesFor(p, rate);
+      const state = createState();
+      state.carrierPhase = alignment;
+      const long = renderOffline(p, rate, frames + 613, 128, state);
+      const findings = measureEntrainment(
+        {
+          left: Float32Array.from(long.left.subarray(613)),
+          right: Float32Array.from(long.right.subarray(613)),
+          sampleRate: rate,
+        },
+        p,
+      );
+      const at = `${p.modulationHz} Hz on ${p.carrierHz} Hz`;
+      expect(`${at}: ${statuses(findings)}`).toBe(`${at}: ok,ok,ok,ok,ok,ok,ok`);
     }
   });
 
