@@ -131,21 +131,42 @@ describe('the entrainment tap against its reference', () => {
         const state = createState();
         state.carrierPhase = alignment;
         const long = renderOffline(p, SR, FRAMES + 613, 128, state);
-        const finding = byId(
-          measureEntrainment(
-            {
-              left: Float32Array.from(long.left.subarray(613)),
-              right: Float32Array.from(long.right.subarray(613)),
-              sampleRate: SR,
-            },
-            p,
-          ),
-          'graph-spectrum',
+        const findings = measureEntrainment(
+          {
+            left: Float32Array.from(long.left.subarray(613)),
+            right: Float32Array.from(long.right.subarray(613)),
+            sampleRate: SR,
+          },
+          p,
         );
+        // Every reading, not the spectrum alone: the alignment the spectrum
+        // finds is the one they are all compared at.
         const at = `${label} at ${alignment}`;
-        expect(`${at}: ${finding.status}`).toBe(`${at}: ok`);
+        expect(`${at}: ${statuses(findings)}`).toBe(`${at}: ok,ok,ok,ok,ok,ok,ok`);
       }
     }
+  });
+
+  it('compares the envelope at the alignment the spectrum found', () => {
+    // Found in review. With only the spectrum turned to the capture's
+    // alignment, a narrow pulse on a low carrier timed its envelope at 80 Hz
+    // against a phase-zero reference's 40, while the spectrum beside it passed.
+    // Reachable from the controls: 80 Hz is the Carrier floor, 5% the Duty floor.
+    const rate = 32000;
+    const p = params({ carrierHz: 80, duty: 0.05, edge: 0 });
+    const state = createState();
+    state.carrierPhase = 0.4423;
+    const rendered = renderOffline(p, rate, rate * 2, 128, state);
+    const findings = measureEntrainment(
+      {
+        left: Float32Array.from(rendered.left),
+        right: Float32Array.from(rendered.right),
+        sampleRate: rate,
+      },
+      p,
+    );
+    expect(byId(findings, 'graph-envelope-frequency').status).toBe('ok');
+    expect(statuses(findings)).toBe('ok,ok,ok,ok,ok,ok,ok');
   });
 
   it('probes the sidebands where the configuration puts them', () => {
