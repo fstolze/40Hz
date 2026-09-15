@@ -20,8 +20,9 @@
  * volume. They are also phase-invariant, which matters because a captured
  * window starts wherever the ring happened to be while the oracle starts at
  * phase zero. Invariant to where the window starts is not invariant to where
- * the carrier sits under its envelope, though; the spectrum comparison has to
- * model that separately, in `carrierAlignments`.
+ * the carrier sits under its envelope, though, so the reference is first turned
+ * to the capture's alignment — see `carrierAlignments` — and every reading is
+ * compared against that.
  *
  * **Why against the oracle rather than the commanded numbers.** `depth` is not
  * the modulation index except for the sine shape, where
@@ -396,7 +397,25 @@ export function measureEntrainment(capture: Capture, params: EntrainmentParams):
     ];
   }
 
-  const reference = renderOffline(params, sampleRate, frames);
+  /*
+   * The reference at the capture's own carrier alignment, not at zero.
+   *
+   * The spectrum comparison finds the alignment, and every other reading is
+   * measured against the reference turned to it. Against phase zero, only the
+   * spectrum was protected: an 80 Hz carrier hard-gated at 5%, captured at
+   * 32 kHz with the carrier at 0.4423 of a cycle, timed its envelope at 80 Hz
+   * against 40 and warned, while the spectrum beside it passed. A narrow pulse
+   * has a flat comb of envelope harmonics, and which is tallest is decided by
+   * where the carrier sits under it.
+   */
+  const aligned = carrierAlignments(
+    params,
+    sampleRate,
+    frames,
+    renderOffline(params, sampleRate, frames),
+  );
+  const alignment = closestAlignment([left, right], aligned);
+  const reference = referenceAt(aligned, alignment.angle);
 
   const findings: Finding[] = [];
 
@@ -449,12 +468,7 @@ export function measureEntrainment(capture: Capture, params: EntrainmentParams):
     ),
   );
 
-  findings.push(
-    spectrumFinding(
-      spectralDeviationDb([left, right], carrierAlignments(params, sampleRate, frames, reference)),
-      bandWidthHz(frames, sampleRate),
-    ),
-  );
+  findings.push(spectrumFinding(alignment.deviationDb, bandWidthHz(frames, sampleRate)));
 
   findings.push(sidebandFinding(left, reference.left, sampleRate, params));
 
@@ -713,16 +727,20 @@ function worstRatioSquared(forms: ChannelForms, c: number, s: number, n: number)
 /**
  * Alignments tried: a coarse ring, then a fine one around the best of it.
  *
- * Swept over the presets at five sample rates, 64 then 16 either side leaves a
- * healthy capture within 1.5 dB of its closest alignment — under the 2.8 dB the
- * tolerance was measured against — for about ninety evaluations.
+ * The alignment found here is also the one every other reading is compared at,
+ * so it has to be close as well as good enough for the spectrum. A narrow pulse
+ * is where that bites: at 24 then 6, 2,240 healthy AM captures — carriers 80 Hz
+ * to 8 kHz, duty 2% to 50%, hard and tapered edges, 22.05 to 96 kHz, seven
+ * alignments, and every preset — still warned three times, all at 2% duty, on
+ * envelope rate and spectrum. At 64 then 16 none do. 128 and 360 steps change
+ * nothing further and cost 54 and 96 ms a pass at 48 kHz, against 35 here.
  */
-const ALIGNMENT_STEPS = 24;
-const ALIGNMENT_REFINE = 6;
+const ALIGNMENT_STEPS = 64;
+const ALIGNMENT_REFINE = 16;
 
 /**
- * The worst disagreement between the capture and its reference, across the
- * spectrum, in dB — against the closest carrier alignment.
+ * The closest carrier alignment, and the worst disagreement between the capture
+ * and its reference there, across the spectrum, in dB.
  *
  * The check that notices content in the wrong *place*. Everything else here
  * asks about levels and shapes, and a tone at the wrong frequency satisfies
@@ -741,12 +759,15 @@ const ALIGNMENT_REFINE = 6;
  * only among frequencies the envelope already occupies, so no alignment can
  * account for a component somewhere it should not be.
  */
-function spectralDeviationDb(measured: Float64Array[], aligned: AlignedReference[]): number {
+function closestAlignment(
+  measured: Float64Array[],
+  aligned: AlignedReference[],
+): { angle: number; deviationDb: number } {
   const n = Math.min(
     ...measured.map((m) => prevPowerOfTwo(m.length)),
     ...aligned.map((a) => prevPowerOfTwo(a.tones.length)),
   );
-  if (n < 2 * BINS_PER_BAND) return 0;
+  if (n < 2 * BINS_PER_BAND) return { angle: 0, deviationDb: 0 };
 
   const channels = measured.map((m, i) => channelForms(m, aligned[i], n));
   const worstAt = (angle: number) => {
@@ -768,10 +789,33 @@ function spectralDeviationDb(measured: Float64Array[], aligned: AlignedReference
   for (let j = -ALIGNMENT_REFINE; j <= ALIGNMENT_REFINE; j += 1) {
     const angle = centre + (j * step) / ALIGNMENT_REFINE;
     const value = worstAt(angle);
-    if (value < best) best = value;
+    if (value < best) [best, bestAngle] = [value, angle];
   }
   // Squared ratios, so ten rather than twenty.
-  return 10 * Math.log10(best);
+  return { angle: bestAngle, deviationDb: 10 * Math.log10(best) };
+}
+
+/**
+ * Both channels of the reference, turned to `angle`.
+ *
+ * Exact over the whole window, not only the power-of-two span the spectrum
+ * read: the combination is sample by sample, the same one the spectrum's
+ * quadratic forms describe.
+ */
+function referenceAt(
+  aligned: AlignedReference[],
+  angle: number,
+): { left: Float64Array; right: Float64Array } {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const [left, right] = aligned.map(({ tones, inPhase, quadrature }) => {
+    const out = new Float64Array(tones.length);
+    for (let i = 0; i < out.length; i += 1) {
+      out[i] = tones[i] + c * inPhase[i] + s * quadrature[i];
+    }
+    return out;
+  });
+  return { left, right };
 }
 
 /**
