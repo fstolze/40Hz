@@ -41,7 +41,7 @@ A **sound recipe** layers three sources:
 
 <img src="docs/images/sound-recipe-light.png" alt="The Sound recipe panel. Entrainment has sliders for modulation, carrier, duty, edge, depth and level, an envelope-shape selector, and a tuner with semitone buttons. Two-tone has Off, Binaural and Monaural routing. Soundscape has noise color, level, notch depth and notch Q.">
 
-Six built-in presets give you starting points, each described by its signal rather than a promised
+Seven built-in presets give you starting points, each described by its signal rather than a promised
 effect. **Save as…** keeps your own version.
 [Every control, in detail](docs/usage.md#the-sound-recipe).
 
