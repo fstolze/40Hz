@@ -427,17 +427,24 @@ export function measureEntrainment(capture: Capture, params: EntrainmentParams):
    * comparison is still caught, apart from the corner `waveformAlignment`
    * records.
    */
-  const lead = Math.min(Math.ceil(sampleRate / params.modulationHz), Math.floor(frames / 2));
-  const aligned = carrierAlignments(
-    params,
-    sampleRate,
-    frames + lead,
-    renderOffline(params, sampleRate, frames + lead),
-  );
-  const found = waveformAlignment([left, right], aligned, frames, lead, params);
-  const window = aligned.map((part) => windowOf(part, found.offset, frames));
-  const alignment = closestAlignment([left, right], window);
-  const reference = referenceAt(window, found.angle);
+  let reference: { left: Float64Array; right: Float64Array };
+  let spectrumDb: number;
+  if (frames > ALIGNMENT_MAX_FRAMES) {
+    reference = renderOffline(params, sampleRate, frames);
+    spectrumDb = phaseZeroDeviationDb([left, right], [reference.left, reference.right]);
+  } else {
+    const lead = Math.min(Math.ceil(sampleRate / params.modulationHz), Math.floor(frames / 2));
+    const aligned = carrierAlignments(
+      params,
+      sampleRate,
+      frames + lead,
+      renderOffline(params, sampleRate, frames + lead),
+    );
+    const found = waveformAlignment([left, right], aligned, frames, lead, params);
+    const window = aligned.map((part) => windowOf(part, found.offset, frames));
+    spectrumDb = closestAlignment([left, right], window).deviationDb;
+    reference = referenceAt(window, found.angle);
+  }
 
   const findings: Finding[] = [];
 
@@ -490,7 +497,7 @@ export function measureEntrainment(capture: Capture, params: EntrainmentParams):
     ),
   );
 
-  findings.push(spectrumFinding(alignment.deviationDb, bandWidthHz(frames, sampleRate)));
+  findings.push(spectrumFinding(spectrumDb, bandWidthHz(frames, sampleRate)));
 
   findings.push(sidebandFinding(left, reference.left, sampleRate, params));
 
@@ -535,7 +542,8 @@ export function measureEntrainment(capture: Capture, params: EntrainmentParams):
 const BINS_PER_BAND = 2;
 
 function bandEnergies(signal: Float64Array, frames: number): Float64Array {
-  const re = Float64Array.from(hann(Float64Array.from(signal.subarray(0, frames))));
+  // `hann` returns a fresh buffer, so it is transformed in place without a copy.
+  const re = hann(signal.subarray(0, frames));
   const im = new Float64Array(frames);
   fft(re, im);
 
@@ -601,10 +609,11 @@ function carrierAlignments(
 ): AlignedReference[] {
   // With no AM path there is nothing to align, and the reference is the answer.
   if (params.amGain <= 0) {
+    const silence = new Float64Array(frames);
     return [reference.left, reference.right].map((channel) => ({
       tones: channel,
-      inPhase: new Float64Array(frames),
-      quadrature: new Float64Array(frames),
+      inPhase: silence,
+      quadrature: silence,
     }));
   }
 
@@ -615,9 +624,14 @@ function carrierAlignments(
   turned.carrierPhase = 0.25;
   const quadrature = renderOffline(amOnly, sampleRate, frames, 0, turned);
 
+  // Without a pair the reference is the AM path, and its tones are silence.
+  const silence = params.twoToneMode === 'off' ? new Float64Array(frames) : null;
   return (['left', 'right'] as const).map((side) => {
-    const tones = new Float64Array(frames);
-    for (let i = 0; i < frames; i += 1) tones[i] = reference[side][i] - inPhase[side][i];
+    let tones = silence;
+    if (tones === null) {
+      tones = new Float64Array(frames);
+      for (let i = 0; i < frames; i += 1) tones[i] = reference[side][i] - inPhase[side][i];
+    }
     return { tones, inPhase: inPhase[side], quadrature: quadrature[side] };
   });
 }
@@ -666,18 +680,37 @@ interface ChannelForms {
   scratch: Float64Array;
 }
 
+function sameReference(a: AlignedReference, b: AlignedReference, n: number): boolean {
+  for (let i = 0; i < n; i += 1) {
+    if (a.tones[i] !== b.tones[i] || a.inPhase[i] !== b.inPhase[i]) return false;
+    if (a.quadrature[i] !== b.quadrature[i]) return false;
+  }
+  return true;
+}
+
 function isSilent(signal: Float64Array, n: number): boolean {
   for (let i = 0; i < n; i += 1) if (signal[i] !== 0) return false;
   return true;
 }
 
-function channelForms(measured: Float64Array, aligned: AlignedReference, n: number): ChannelForms {
+function channelForms(
+  measured: Float64Array,
+  aligned: AlignedReference,
+  n: number,
+  silent: { re: Float64Array; im: Float64Array },
+  sameAs?: ChannelForms,
+): ChannelForms {
+  const measuredLevels = bandEnergies(measured, n);
+  for (let k = 0; k < measuredLevels.length; k += 1) measuredLevels[k] *= measuredLevels[k];
+  // Ears whose references are identical share their forms, which is every AM
+  // recipe without a dichotic pair: the transforms below are the bulk of this.
+  if (sameAs !== undefined) return { ...sameAs, measured: measuredLevels };
+
   // A zero buffer transforms to zeros; skipping it is a third of the transforms
   // for every recipe that plays only one path.
-  const silent = { re: new Float64Array(n), im: new Float64Array(n) };
   const spectrum = (signal: Float64Array) => {
     if (isSilent(signal, n)) return silent;
-    const re = Float64Array.from(hann(Float64Array.from(signal.subarray(0, n))));
+    const re = hann(signal.subarray(0, n));
     const im = new Float64Array(n);
     fft(re, im);
     return { re, im };
@@ -711,8 +744,6 @@ function channelForms(measured: Float64Array, aligned: AlignedReference, n: numb
   }
   for (const column of Object.values(meanSquare)) column[0] /= n;
 
-  const measuredLevels = bandEnergies(measured, n);
-  for (let k = 0; k < measuredLevels.length; k += 1) measuredLevels[k] *= measuredLevels[k];
   return { measured: measuredLevels, bands, meanSquare, scratch: new Float64Array(count) };
 }
 
@@ -725,25 +756,43 @@ function channelForms(measured: Float64Array, aligned: AlignedReference, n: numb
 function worstRatioSquared(forms: ChannelForms, c: number, s: number, n: number): number {
   const scale = n * n * Math.max(energyAt(forms.meanSquare, 0, c, s), 1e-24);
   const reference = forms.scratch;
-
-  let peak = 0;
   for (let k = 0; k < reference.length; k += 1) {
-    const value = Math.max(energyAt(forms.bands, k, c, s), 0) / scale;
-    reference[k] = value;
-    if (value > peak) peak = value;
+    reference[k] = Math.max(energyAt(forms.bands, k, c, s), 0) / scale;
   }
+  return worstBandRatioSquared(forms.measured, reference);
+}
+
+/** The worst squared ratio between two sets of squared band levels. */
+function worstBandRatioSquared(measured: Float64Array, reference: Float64Array): number {
+  let peak = 0;
+  for (const value of reference) if (value > peak) peak = value;
   // Bands more than 40 dB below the loudest are where quantisation and window
   // skirts live; both sides clamp there, so absent compares equal to absent.
   const floor = peak * 1e-4;
 
   let worst = 1;
   for (let k = 0; k < reference.length; k += 1) {
-    const a = Math.max(forms.measured[k], floor);
+    const a = Math.max(measured[k], floor);
     const b = Math.max(reference[k], floor);
     const ratio = a > b ? a / b : b / a;
     if (ratio > worst) worst = ratio;
   }
   return worst;
+}
+
+/** The spectrum against the render as it stands, for windows past the alignment cap. */
+function phaseZeroDeviationDb(measured: Float64Array[], reference: Float64Array[]): number {
+  const n = Math.min(
+    ...measured.map((m, i) => prevPowerOfTwo(Math.min(m.length, reference[i].length))),
+  );
+  if (n < 2 * BINS_PER_BAND) return 0;
+  const squared = (signal: Float64Array) => bandEnergies(signal, n).map((v) => v * v);
+  let worst = 1;
+  for (const [i, m] of measured.entries()) {
+    worst = Math.max(worst, worstBandRatioSquared(squared(m), squared(reference[i])));
+  }
+  // Squared ratios, so ten rather than twenty.
+  return 10 * Math.log10(worst);
 }
 
 /**
@@ -756,6 +805,23 @@ function worstRatioSquared(forms: ChannelForms, c: number, s: number, n: number)
  */
 const ALIGNMENT_STEPS = 64;
 const ALIGNMENT_REFINE = 16;
+
+/**
+ * The longest window the alignment work is done for.
+ *
+ * Every rate the Modulation slider reaches, 20 to 60 Hz, asks for 2^16 frames
+ * at 44.1 and 48 kHz and 2^17 at 96 kHz, so nothing the controls can make is
+ * past this. Beyond it are recipes only a hand-edited preset holds, down to
+ * 1 Hz — below that the capture ring's eight seconds cannot hold eight periods
+ * and the window is refused before anything is rendered. There the alignment
+ * roughly doubled a pass's time and tripled what it held: at 1 Hz, 0.13 s and
+ * 50 MB became 0.28 s and 117 MB at 48 kHz, and 0.25 s and 87 MB became 0.55 s
+ * and 258 MB at 96 kHz, on the renderer's thread. Past the cap those windows
+ * are compared against the phase-zero render, as they were before alignment
+ * existed, with the false warnings on folded carriers that implies; a recipe
+ * that slow was never offered.
+ */
+export const ALIGNMENT_MAX_FRAMES = 1 << 17;
 
 /**
  * The closest carrier alignment, and the worst disagreement between the capture
@@ -788,7 +854,13 @@ function closestAlignment(
   );
   if (n < 2 * BINS_PER_BAND) return { angle: 0, deviationDb: 0 };
 
-  const channels = measured.map((m, i) => channelForms(m, aligned[i], n));
+  const silent = { re: new Float64Array(n), im: new Float64Array(n) };
+  const first = channelForms(measured[0], aligned[0], n, silent);
+  const channels = [first];
+  for (let i = 1; i < measured.length; i += 1) {
+    const same = sameReference(aligned[0], aligned[i], n);
+    channels.push(channelForms(measured[i], aligned[i], n, silent, same ? first : undefined));
+  }
   const worstAt = (angle: number) => {
     const c = Math.cos(angle);
     const s = Math.sin(angle);

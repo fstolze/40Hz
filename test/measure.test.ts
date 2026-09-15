@@ -11,6 +11,7 @@
 
 import { describe, it, expect } from './helpers/expect.ts';
 import {
+  ALIGNMENT_MAX_FRAMES,
   captureFramesFor,
   measureEntrainment,
   measureMaster,
@@ -186,6 +187,38 @@ describe('the entrainment tap against its reference', () => {
       const at = `${p.modulationHz} Hz on ${p.carrierHz} Hz`;
       expect(`${at}: ${statuses(findings)}`).toBe(`${at}: ok,ok,ok,ok,ok,ok,ok`);
     }
+  });
+
+  it('aligns every window the Modulation slider can ask for', () => {
+    // The alignment work is capped by window length, because a slow rate's
+    // window is long enough to hold the renderer's thread for half a second.
+    // The cap is only safe while no recipe the controls can make is past it:
+    // the slider runs from 20 to 60 Hz.
+    for (const sampleRate of [22050, 32000, 44100, 48000, 96000]) {
+      for (const modulationHz of [20, 40, 60]) {
+        const frames = captureFramesFor(params({ modulationHz }), sampleRate);
+        const at = `${modulationHz} Hz at ${sampleRate}`;
+        expect(`${at}: ${frames <= ALIGNMENT_MAX_FRAMES}`).toBe(`${at}: true`);
+      }
+    }
+  });
+
+  it('still judges a window past the alignment cap', () => {
+    // A 1 Hz recipe fills the capture ring's eight seconds — the longest window
+    // a pass can receive — and is compared against the phase-zero render. It
+    // must still pass when healthy and still notice a carrier that moved.
+    const p = params({ modulationHz: 1 });
+    const frames = 8 * SR;
+    expect(frames > ALIGNMENT_MAX_FRAMES).toBe(true);
+
+    const healthy = renderOffline(p, SR, frames);
+    expect(statuses(measureEntrainment({ ...healthy, sampleRate: SR }, p))).toBe(
+      'ok,ok,ok,ok,ok,ok,ok',
+    );
+
+    const moved = renderOffline({ ...p, carrierHz: 230 }, SR, frames);
+    const findings = measureEntrainment({ ...moved, sampleRate: SR }, p);
+    expect(byId(findings, 'graph-spectrum').status).toBe('warning');
   });
 
   it('compares the envelope at the alignment the spectrum found', () => {
