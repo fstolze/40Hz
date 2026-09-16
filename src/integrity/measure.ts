@@ -593,11 +593,11 @@ function bandEnergies(signal: Float64Array, frames: number): Float64Array {
  * the envelope and level readings as well as this one.
  */
 interface AlignedReference {
-  /** The tones alone: the reference with its AM path taken out. */
-  tones: Float64Array;
-  /** The AM path at the reference's alignment. */
+  /** What does not turn: the whole reference when there is nothing to align, else silence. */
+  held: Float64Array;
+  /** The reference at its own alignment. */
   inPhase: Float64Array;
-  /** The AM path a quarter carrier cycle on. */
+  /** The reference a quarter carrier cycle on. */
   quadrature: Float64Array;
 }
 
@@ -607,33 +607,27 @@ function carrierAlignments(
   frames: number,
   reference: { left: Float64Array; right: Float64Array },
 ): AlignedReference[] {
+  const silence = new Float64Array(frames);
   // With no AM path there is nothing to align, and the reference is the answer.
   if (params.amGain <= 0) {
-    const silence = new Float64Array(frames);
     return [reference.left, reference.right].map((channel) => ({
-      tones: channel,
+      held: channel,
       inPhase: silence,
       quadrature: silence,
     }));
   }
 
-  const amOnly: EntrainmentParams = { ...params, twoToneMode: 'off' };
-  const inPhase =
-    params.twoToneMode === 'off' ? reference : renderOffline(amOnly, sampleRate, frames);
+  // The whole reference turns, tones included: the engine starts them from the
+  // carrier's own phase, so a recipe running both paths has one alignment.
   const turned = createState();
   turned.carrierPhase = 0.25;
-  const quadrature = renderOffline(amOnly, sampleRate, frames, 0, turned);
+  const quadrature = renderOffline(params, sampleRate, frames, 0, turned);
 
-  // Without a pair the reference is the AM path, and its tones are silence.
-  const silence = params.twoToneMode === 'off' ? new Float64Array(frames) : null;
-  return (['left', 'right'] as const).map((side) => {
-    let tones = silence;
-    if (tones === null) {
-      tones = new Float64Array(frames);
-      for (let i = 0; i < frames; i += 1) tones[i] = reference[side][i] - inPhase[side][i];
-    }
-    return { tones, inPhase: inPhase[side], quadrature: quadrature[side] };
-  });
+  return (['left', 'right'] as const).map((side) => ({
+    held: silence,
+    inPhase: reference[side],
+    quadrature: quadrature[side],
+  }));
 }
 
 /**
@@ -682,7 +676,7 @@ interface ChannelForms {
 
 function sameReference(a: AlignedReference, b: AlignedReference, n: number): boolean {
   for (let i = 0; i < n; i += 1) {
-    if (a.tones[i] !== b.tones[i] || a.inPhase[i] !== b.inPhase[i]) return false;
+    if (a.held[i] !== b.held[i] || a.inPhase[i] !== b.inPhase[i]) return false;
     if (a.quadrature[i] !== b.quadrature[i]) return false;
   }
   return true;
@@ -715,7 +709,7 @@ function channelForms(
     fft(re, im);
     return { re, im };
   };
-  const t = spectrum(aligned.tones);
+  const t = spectrum(aligned.held);
   const p = spectrum(aligned.inPhase);
   const q = spectrum(aligned.quadrature);
 
@@ -733,13 +727,13 @@ function channelForms(
   }
 
   const meanSquare = energyForms(1);
-  const { tones, inPhase, quadrature } = aligned;
+  const { held, inPhase, quadrature } = aligned;
   for (let i = 0; i < n; i += 1) {
-    meanSquare.tt[0] += tones[i] * tones[i];
+    meanSquare.tt[0] += held[i] * held[i];
     meanSquare.pp[0] += inPhase[i] * inPhase[i];
     meanSquare.qq[0] += quadrature[i] * quadrature[i];
-    meanSquare.tp[0] += tones[i] * inPhase[i];
-    meanSquare.tq[0] += tones[i] * quadrature[i];
+    meanSquare.tp[0] += held[i] * inPhase[i];
+    meanSquare.tq[0] += held[i] * quadrature[i];
     meanSquare.pq[0] += inPhase[i] * quadrature[i];
   }
   for (const column of Object.values(meanSquare)) column[0] /= n;
@@ -850,7 +844,7 @@ function closestAlignment(
 ): { angle: number; deviationDb: number } {
   const n = Math.min(
     ...measured.map((m) => prevPowerOfTwo(m.length)),
-    ...aligned.map((a) => prevPowerOfTwo(a.tones.length)),
+    ...aligned.map((a) => prevPowerOfTwo(a.held.length)),
   );
   if (n < 2 * BINS_PER_BAND) return { angle: 0, deviationDb: 0 };
 
@@ -889,7 +883,7 @@ function closestAlignment(
 /** One reference part's window, starting `offset` frames in. */
 function windowOf(part: AlignedReference, offset: number, frames: number): AlignedReference {
   return {
-    tones: part.tones.subarray(offset, offset + frames),
+    held: part.held.subarray(offset, offset + frames),
     inPhase: part.inPhase.subarray(offset, offset + frames),
     quadrature: part.quadrature.subarray(offset, offset + frames),
   };
@@ -968,7 +962,7 @@ function waveformAlignment(
   const hasAm = params.amGain > 0;
   const parts = [
     ...(hasAm ? [sum((c) => aligned[c].inPhase), sum((c) => aligned[c].quadrature)] : []),
-    sum((c) => aligned[c].tones),
+    sum((c) => aligned[c].held),
   ].filter((part) => !isSilent(part, frames));
   if (parts.length === 0 || period < 1) return { angle: 0, offset: 0 };
 
@@ -1073,10 +1067,10 @@ function referenceAt(
 ): { left: Float64Array; right: Float64Array } {
   const c = Math.cos(angle);
   const s = Math.sin(angle);
-  const [left, right] = aligned.map(({ tones, inPhase, quadrature }) => {
-    const out = new Float64Array(tones.length);
+  const [left, right] = aligned.map(({ held, inPhase, quadrature }) => {
+    const out = new Float64Array(held.length);
     for (let i = 0; i < out.length; i += 1) {
-      out[i] = tones[i] + c * inPhase[i] + s * quadrature[i];
+      out[i] = held[i] + c * inPhase[i] + s * quadrature[i];
     }
     return out;
   });
