@@ -5,6 +5,7 @@ import {
   DEFAULT_PARAMS,
   type EntrainmentParams,
   type EngineState,
+  type TwoToneMode,
 } from '../src/audio/dsp/entrainment-core.ts';
 import { renderOffline } from '../src/audio/dsp/render-offline.ts';
 import { ENVELOPE_SHAPES } from '../src/audio/dsp/envelope.ts';
@@ -295,76 +296,88 @@ describe('switching the two tones in', () => {
     return state;
   }
 
-  /**
-   * What the tones alone contribute, from a given state.
+  /*
+   * What the carrier and modulator live through before the tones come on.
    *
-   * Rendering the same state twice and differencing removes the entrainment
-   * term — it is bit-identical across routings, which the stop condition for
-   * this stage requires and the last test here pins. What is left is the tone
-   * pair and nothing else, which is the thing being switched.
-   *
-   * `amGain` is a parameter because the removal is only exact when there is
-   * nothing to remove. Output is `Float32`, and rounding `am + lo` depends on
-   * the magnitude of `am`, so differencing two summed buffers leaves a residue
-   * that varies with the entrainment term's phase — small, but not zero, and
-   * these assertions are exact. Pass 0.5 to ask what the ear would get, and 0
-   * to compare two tone pairs bit for bit.
+   * Two glides and a change of rate, because those are what carry the carrier
+   * and modulator away from the zero the reference render starts them at — and
+   * what the tones have to stay in step through while they sound. Each segment
+   * is one `render` call, so a glide is interpolated exactly as the processor
+   * asks for it.
    */
-  function toneContribution(state: EngineState, frames: number, amGain: number) {
-    const on = params({ ...ON, amGain });
-    const off = params({ ...OFF, amGain });
-    const withTones = { l: new Float32Array(frames), r: new Float32Array(frames) };
-    const without = { l: new Float32Array(frames), r: new Float32Array(frames) };
-    render(on, clone(state), SR, withTones.l, withTones.r, frames);
-    render(off, clone(state), SR, without.l, without.r, frames);
-    const left = new Float32Array(frames);
-    const right = new Float32Array(frames);
-    for (let i = 0; i < frames; i++) {
-      left[i] = withTones.l[i] - without.l[i];
-      right[i] = withTones.r[i] - without.r[i];
-    }
+  const SEGMENTS = [
+    { frames: 1055, carrierHz: 220, to: 220, modulationHz: 40 },
+    { frames: 700, carrierHz: 220, to: 247.5, modulationHz: 40 },
+    { frames: 1109, carrierHz: 247.5, to: 247.5, modulationHz: 41 },
+    { frames: 333, carrierHz: 247.5, to: 196, modulationHz: 40 },
+    { frames: 2000, carrierHz: 196, to: 196, modulationHz: 40 },
+  ];
+  const MIXED = { amGain: 0.5, twoToneGain: 0.5, carrierHz: 196 };
+
+  /** Routing on for the first `sounding` segments and off after, then `mode` for good. */
+  function afterHistory(
+    sounding: number,
+    mode: TwoToneMode,
+  ): { left: Float32Array; right: Float32Array } {
+    const state = createState();
+    SEGMENTS.forEach(({ frames, carrierHz, to, modulationHz }, i) => {
+      const p = params({
+        ...MIXED,
+        carrierHz,
+        modulationHz,
+        twoToneMode: i < sounding ? mode : 'off',
+      });
+      render(p, state, SR, new Float32Array(frames), new Float32Array(frames), frames, to);
+    });
+    const left = new Float32Array(4096);
+    const right = new Float32Array(4096);
+    render(params({ ...MIXED, twoToneMode: mode }), state, SR, left, right, 4096);
     return { left, right };
   }
 
-  // Chosen to freeze the tones across the phase circle, including the two
-  // quarter points where a frozen restart is a full-scale step rather than a
-  // small one. 48000 / 220 = 218.18 samples per cycle.
-  const HISTORIES = [1000, 1055, 1109, 1164, 2000, 3777];
-
-  it('arrives at zero amplitude, from any phase it froze at', () => {
-    for (const frames of HISTORIES) {
-      const state = frozenAfter(frames);
-
-      // The control. Without it this test would pass on a build that never
-      // froze anything, and the interesting phases are the quarter points —
-      // where the old behaviour was a full-amplitude discontinuity.
-      expect(state.toneLoPhase).toBeGreaterThan(0);
-
-      // The entrainment term is present, which is the real case: the claim is
-      // that nothing is added to it at the boundary, not that the boundary is
-      // silent.
-      const { left, right } = toneContribution(state, 1, 0.5);
-      expect(left[0]).toBe(0);
-      expect(right[0]).toBe(0);
+  const worstDifference = (
+    a: { left: Float32Array; right: Float32Array },
+    b: { left: Float32Array; right: Float32Array },
+  ): number => {
+    let worst = 0;
+    for (let i = 0; i < a.left.length; i++) {
+      worst = Math.max(worst, Math.abs(a.left[i] - b.left[i]), Math.abs(a.right[i] - b.right[i]));
     }
-  });
+    return worst;
+  };
 
-  it('sounds the same however it got there', () => {
-    // The reproducibility claim: a preset must not depend on when routing was
-    // last switched off. Compared against a first-ever activation, so this
-    // also pins that resuming and starting fresh are the same thing.
-    const reference = toneContribution(createState(), 4096, 0);
-    for (const frames of HISTORIES) {
-      const { left, right } = toneContribution(frozenAfter(frames), 4096, 0);
-      let maxDiff = 0;
-      for (let i = 0; i < reference.left.length; i++) {
-        maxDiff = Math.max(
-          maxDiff,
-          Math.abs(reference.left[i] - left[i]),
-          Math.abs(reference.right[i] - right[i]),
-        );
+  it('sounds as if the tones had been playing all along, whenever they came on', () => {
+    /*
+     * The reproducibility claim, and the one the integrity checks rest on.
+     *
+     * The lower tone runs at exactly the carrier, so how far it fills the AM
+     * troughs depends on its phase against the carrier, and that is fixed at the
+     * moment it starts. Resetting to zero fixed it only when the carrier happened
+     * to be at zero too — true at the first sample of a session, and nowhere
+     * after a glide. So the same recipe sounded different depending on when its
+     * tones were switched in, and a correct capture disagreed with the reference
+     * render, which has every phase at zero from the first sample.
+     *
+     * The whole output is compared, not the tones alone: the entrainment term is
+     * the same in every run by construction, so any difference is the tones'
+     * relation to it. Every history is set against one where the tones sounded
+     * through all of it, glides and rate change included; zero segments is a
+     * first-ever switch-on after the carrier has already moved. Not bit-exact:
+     * the upper tone accumulates its own phase in one run and is derived from
+     * the carrier's and modulator's in the other, so they differ in the last few
+     * bits of a double.
+     */
+    for (const mode of ['dichotic', 'diotic'] as const) {
+      const always = afterHistory(SEGMENTS.length, mode);
+
+      // The control: the tones are really there, so a match is about them.
+      expect(worstDifference(always, afterHistory(SEGMENTS.length, 'off'))).toBeGreaterThan(0.3);
+
+      for (let sounding = 0; sounding < SEGMENTS.length; sounding++) {
+        const worst = worstDifference(afterHistory(sounding, mode), always);
+        const label = `${mode} after ${sounding} sounding segments`;
+        expect(`${label}: ${worst < 1e-6 ? 'same' : worst}`).toBe(`${label}: same`);
       }
-      expect(maxDiff).toBe(0);
     }
   });
 

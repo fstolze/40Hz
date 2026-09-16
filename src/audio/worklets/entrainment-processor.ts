@@ -144,6 +144,8 @@ class EntrainmentProcessor extends AudioWorkletProcessor {
   private toneFadeStep = 0;
   /** The routing waiting for the fade to reach zero, if any. */
   private pendingToneMode: TwoToneMode | null = null;
+  /** Whether a block has been rendered yet, which is the one start that needs no fade. */
+  private rendered = false;
   /**
    * Reused so a fade allocates nothing on the audio thread.
    *
@@ -400,18 +402,42 @@ class EntrainmentProcessor extends AudioWorkletProcessor {
    * only ran at 48 kHz passed on that residue rather than on the code.
    */
   private advanceToneSwap(): { from: number; to: number } {
+    /*
+     * Tones that were silent last block start from zero, however they come back.
+     *
+     * `render` starts them at the carrier's phase, not at zero, so their first
+     * sample is `sin(TAU * carrierPhase)` at whatever level this block hands it.
+     * A routing switch already arrives here at zero, but the level can bring them
+     * back too: with routing on, a Two-tone level dragged to nothing settles at
+     * exactly zero, and raising it again started the tones at the smoother's
+     * first step — a full-scale step with smoothing off, and still a step with it
+     * on. So whenever the tones are not sounding, the fade is held at zero and set
+     * to rise, and nothing that switches them on can skip it.
+     *
+     * Not on the very first block. The phases are all zero there, so the tones
+     * start at `sin(0)` anyway, and a seeded processor must match the core sample
+     * for sample.
+     */
+    if (this.rendered && !this.state.toneActive && this.current.twoToneMode !== 'off') {
+      this.toneFade = 0;
+      if (this.pendingToneMode === null) {
+        this.toneFadeStep = 1 / Math.max(1, Math.round((TONE_SWAP_SECONDS * sampleRate) / 128));
+      }
+    }
+
     if (this.toneFade === 0 && this.pendingToneMode !== null) {
       this.current.twoToneMode = this.pendingToneMode;
       this.pendingToneMode = null;
       /*
-       * The tones are at exactly zero here, so this is where the phase reset
-       * belongs — and it is done by marking them silent rather than by writing
-       * the phases, so `render` performs it through its own edge and there is
-       * one place that decides what "starting up" means.
+       * The tones are at exactly zero here, so this is where they restart — and
+       * it is done by marking them silent rather than by writing the phases, so
+       * `render` performs it through its own edge and there is one place that
+       * decides what "starting up" means.
        *
-       * It matters for a swap between two active routings as much as for
-       * switch-on: without it, dichotic to diotic would carry the old phase
-       * across and the same preset would again depend on when it was switched.
+       * For a swap between two active routings this re-anchors phases that were
+       * already anchored: the tones kept sounding all the way down the fade, so
+       * their relation to the carrier never moved. It is kept so that a swap and
+       * a switch-on are the same event, not because the swap needs it.
        */
       this.state.toneActive = false;
       if (this.current.twoToneMode === 'off') {
@@ -490,6 +516,7 @@ class EntrainmentProcessor extends AudioWorkletProcessor {
 
     render(params, this.state, sampleRate, left, right, frames, carrierTo, toneGainTo);
     if (carrierTo !== undefined) this.current.carrierHz = carrierTo;
+    this.rendered = true;
 
     return this.running;
   }
