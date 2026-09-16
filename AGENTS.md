@@ -349,6 +349,16 @@ produces audible nonsense.
 **The fade _lands_ on the planned end, it does not start there.** Otherwise the audio, the phase
 machine, and the stored record disagree three ways about when a session ended.
 
+**A phase that has to keep a relation is started from the phases it relates to, never from a
+constant.** The two tones restarted at zero so switching them on was silent, which fixed their
+relation to the AM carrier only when the carrier happened to be at zero — at the first sample of a
+session and nowhere after a glide. The lower tone runs at the carrier, so that relation decides how
+far it fills the AM troughs: the same recipe sounded different depending on when its tones came on,
+and correct captures warned against a reference that starts every phase at zero. The tones now
+start from the carrier and modulator phases, and silence at the start is the processor's fade, not
+the phase's job. Tests that only ever switched routing without first moving the carrier passed
+under both behaviours.
+
 **Both gains only attenuate.** That is what keeps the headroom guarantee — measured at the
 sources in `worstCaseSourcePeak` — true at the destination.
 

@@ -23,6 +23,7 @@ import { rms } from '../src/audio/analysis/metrics.ts';
 import {
   DEFAULT_PARAMS,
   createState,
+  render,
   type EntrainmentParams,
 } from '../src/audio/dsp/entrainment-core.ts';
 import { checkedScopes, recordedStatus, type Finding } from '../src/integrity/findings.ts';
@@ -241,6 +242,141 @@ describe('the entrainment tap against its reference', () => {
     );
     expect(byId(findings, 'graph-envelope-frequency').status).toBe('ok');
     expect(statuses(findings)).toBe('ok,ok,ok,ok,ok,ok,ok');
+  });
+
+  /**
+   * A capture as the engine leaves one: the carrier glides in with the tones off,
+   * then the tones come on, and the window opens some way after.
+   *
+   * The glide is what matters. It leaves the carrier and the modulator wherever
+   * it ends — `glideFrames` chooses where — and the tones then start against
+   * that, rather than against the zero the reference render starts from.
+   *
+   * The window is the length a pass actually asks for, not a round two seconds:
+   * at 96 kHz two seconds is 192,000 frames, past the length beyond which the
+   * alignment work is skipped, and the check would then be answering a question
+   * no capture puts to it.
+   */
+  const afterGlide = (p: EntrainmentParams, sampleRate: number, glideFrames: number) => {
+    const state = createState();
+    const approach = { ...p, twoToneMode: 'off' as const, carrierHz: p.carrierHz * 0.9 };
+    const scratch = new Float32Array(glideFrames);
+    render(approach, state, sampleRate, scratch, scratch.slice(), glideFrames, p.carrierHz);
+    const offset = 613;
+    const frames = captureFramesFor(p, sampleRate);
+    const long = renderOffline(p, sampleRate, frames + offset, 128, state);
+    return {
+      left: Float32Array.from(long.left.subarray(offset)),
+      right: Float32Array.from(long.right.subarray(offset)),
+      sampleRate,
+    };
+  };
+
+  it('stays quiet for AM and two-tone together, wherever the tones came on', () => {
+    // The tones used to restart at phase zero wherever the carrier was, so their
+    // relation to it — which decides how far the lower tone fills the AM troughs
+    // — was arbitrary after any glide, while the reference always had it at
+    // zero. A correct capture then warned on nearly every reading: an 80 Hz
+    // envelope against 40, depth 0.55 against 0.96, sidebands 30 dB out, one
+    // ear 4.7 dB louder than the other. 220 Hz and 8 kHz are carriers where the
+    // envelope's sidebands fold, which is where the alignment shows most.
+    for (const sampleRate of [22050, 32000, 44100, 48000, 96000]) {
+      for (const carrierHz of [220, 8000]) {
+        for (const twoToneMode of ['dichotic', 'diotic'] as const) {
+          for (const glideFrames of [1234, 2711]) {
+            const p = params({ amGain: 0.25, twoToneGain: 0.2, twoToneMode, carrierHz });
+            const findings = measureEntrainment(afterGlide(p, sampleRate, glideFrames), p);
+            const label = `${twoToneMode} ${carrierHz} Hz at ${sampleRate} after ${glideFrames}`;
+            const off = findings
+              .filter((f) => f.status !== 'ok')
+              .map((f) => `${f.id}: ${f.detail}`);
+            expect(`${label}: ${off.join('; ') || 'ok'}`).toBe(`${label}: ok`);
+          }
+        }
+      }
+    }
+  });
+
+  it('reads a gated pulse under the tones against the alignment it is playing at', () => {
+    // Where the envelope's sidebands fold, every reading moves with the carrier's
+    // alignment, not only the spectrum. Two things have to be right for these to
+    // pass, and each case fails without one of them. The tones must turn with
+    // the carrier in the aligned reference: held as rendered, a 10% pulse under a
+    // binaural pair chose the wrong alignment and read its depth as 0.52 against
+    // 0.82. And the scalar readings must be taken against the reference turned to
+    // that alignment: against phase zero, a 2% pulse under a monaural pair read
+    // its sidebands 8 dB out. Hard-gated and at 32 kHz, where both were found.
+    const cases = [
+      params({ duty: 0.1, edge: 0, carrierHz: 200, twoToneMode: 'dichotic' }),
+      params({ duty: 0.1, edge: 0, carrierHz: 200, twoToneMode: 'diotic' }),
+      params({ duty: 0.02, edge: 0, carrierHz: 200, twoToneMode: 'diotic' }),
+    ].map((p) => ({ ...p, amGain: 0.25, twoToneGain: 0.2 }));
+    const rate = 32000;
+    for (const p of cases) {
+      for (const alignment of [0.13, 0.3, 0.55, 0.81]) {
+        const state = createState();
+        state.carrierPhase = alignment;
+        const long = renderOffline(p, rate, 2 * rate + 613, 128, state);
+        const findings = measureEntrainment(
+          {
+            left: Float32Array.from(long.left.subarray(613)),
+            right: Float32Array.from(long.right.subarray(613)),
+            sampleRate: rate,
+          },
+          p,
+        );
+        const label = `${p.twoToneMode} at duty ${p.duty}, alignment ${alignment}`;
+        const off = findings.filter((f) => f.status !== 'ok').map((f) => `${f.id}: ${f.detail}`);
+        expect(`${label}: ${off.join('; ') || 'ok'}`).toBe(`${label}: ok`);
+      }
+    }
+  });
+
+  it('still notices a mixed recipe going wrong, wherever the tones came on', () => {
+    // Turning the reference to the capture's alignment is only honest if no
+    // alignment can explain a real fault. These are the faults the tests above
+    // build at alignment zero, rebuilt after a glide.
+    const p = params({ amGain: 0.5, twoToneGain: 0.3, twoToneMode: 'dichotic' });
+    for (const glideFrames of [1234, 2711]) {
+      const healthy = afterGlide(p, SR, glideFrames);
+      const amOnly = afterGlide({ ...p, twoToneGain: 0 }, SR, glideFrames);
+      const status = (left: ArrayLike<number>, right: ArrayLike<number>, id: string) =>
+        byId(
+          measureEntrainment(
+            { left: Float64Array.from(left), right: Float64Array.from(right), sampleRate: SR },
+            p,
+          ),
+          id,
+        ).status;
+
+      // The right ear's tone at 262 Hz rather than 260, at the same level. The
+      // control rebuilds the channel from the same parts with the tone left
+      // where it was, so a warning below is about the frequency and not about
+      // taking the channel apart.
+      const partner = healthy.right.map((v, i) => v - amOnly.right[i]);
+      const level = rms(Float64Array.from(partner)) * Math.SQRT2;
+      const rebuilt = amOnly.right.map((v, i) => v + partner[i]);
+      const wrong = Float64Array.from(
+        amOnly.right,
+        (v, i) => v + level * Math.sin((2 * Math.PI * 262 * i) / SR),
+      );
+      expect(status(healthy.left, rebuilt, 'graph-spectrum')).toBe('ok');
+      expect(
+        `wrong tone after ${glideFrames}: ${status(healthy.left, wrong, 'graph-spectrum')}`,
+      ).toBe(`wrong tone after ${glideFrames}: warning`);
+
+      // Collapsed to mono.
+      const mono = healthy.left.map((v, i) => (v + healthy.right[i]) / 2);
+      expect(`mono after ${glideFrames}: ${status(mono, mono, 'graph-stereo-difference')}`).toBe(
+        `mono after ${glideFrames}: warning`,
+      );
+
+      // One ear nearly gone.
+      const faint = healthy.right.map((v) => v * 0.1);
+      expect(
+        `lost ear after ${glideFrames}: ${status(healthy.left, faint, 'graph-channel-balance')}`,
+      ).toBe(`lost ear after ${glideFrames}: warning`);
+    }
   });
 
   it('probes the sidebands where the configuration puts them', () => {

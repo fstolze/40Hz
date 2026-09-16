@@ -260,6 +260,24 @@ describe('switching the two tones in, through the shipped processor', () => {
     twoToneMode: 'dichotic' as const,
   };
 
+  /** Peak sample-to-sample movement across `[from, to)`, over every channel. */
+  const slew = (channels: Float64Array[], from: number, to: number): number => {
+    let worst = 0;
+    for (const c of channels) {
+      for (let i = Math.max(1, from); i < Math.min(c.length, to); i++) {
+        worst = Math.max(worst, Math.abs(c[i] - c[i - 1]));
+      }
+    }
+    return worst;
+  };
+  const join = (before: Float64Array[], after: Float64Array[]): Float64Array[] =>
+    before.map((b, k) => {
+      const out = new Float64Array(b.length + after[k].length);
+      out.set(b, 0);
+      out.set(after[k], b.length);
+      return out;
+    });
+
   function routing(processor: ProcessorLike, mode: string): void {
     processor.port.onmessage?.({
       data: { type: 'params', params: { twoToneMode: mode }, smoothingSeconds: 0 },
@@ -338,23 +356,6 @@ describe('switching the two tones in, through the shipped processor', () => {
       ['diotic', 'dichotic'],
     ];
 
-    const slew = (channels: Float64Array[], from: number, to: number): number => {
-      let worst = 0;
-      for (const c of channels) {
-        for (let i = Math.max(1, from); i < Math.min(c.length, to); i++) {
-          worst = Math.max(worst, Math.abs(c[i] - c[i - 1]));
-        }
-      }
-      return worst;
-    };
-    const join = (before: Float64Array[], after: Float64Array[]): Float64Array[] =>
-      before.map((b, k) => {
-        const out = new Float64Array(b.length + after[k].length);
-        out.set(b, 0);
-        out.set(after[k], b.length);
-        return out;
-      });
-
     const wasRate = scope.sampleRate;
     try {
       for (const rate of RATES) {
@@ -430,53 +431,150 @@ describe('switching the two tones in, through the shipped processor', () => {
       scope.sampleRate = wasRate;
     }
   });
-  it('sounds identical whenever routing was last switched', () => {
+  it('sounds as if the tones had been playing all along, whenever routing came back', () => {
     /*
-     * The reproducibility claim, end to end: the same preset must not depend
-     * on when routing was toggled.
+     * The reproducibility claim, end to end: the same recipe must not depend on
+     * when routing was toggled, or on where the carrier had got to.
      *
-     * Each pair sounds the tones for a different number of blocks before
-     * switching off, which is what leaves them frozen at different phases —
-     * without that this test passes on any build, because tones that never
-     * sounded are still at zero and there is nothing for a reset to correct.
+     * Every processor glides the carrier at the same block, so by the time the
+     * tones return it is nowhere near zero — resetting the tones to zero, which
+     * this used to pin, passed only because nothing here had moved the carrier.
+     * The histories then differ in how long the tones sounded before routing
+     * went off: never, briefly, longer, and once coming back before the fade out
+     * had finished, which abandons the swap rather than restarting the tones.
+     * Each is compared, after its fade in, against a processor whose tones
+     * sounded throughout. The entrainment term underneath is identical in all
+     * of them, so the whole output can be compared.
      */
-    const options = { processorOptions: { params: SOUNDING, smoothingSeconds: 0 } };
+    const glide = (processor: ProcessorLike) =>
+      processor.port.onmessage?.({
+        data: { type: 'params', params: { carrierHz: 247.5 }, smoothingSeconds: 0 },
+      });
 
-    // Both channels, because in dichotic routing they carry different tones:
-    // comparing the left alone passes a build that resets only the lower one.
-    function afterSounding(blocks: number, thenSwitchOn: boolean): [Float64Array, Float64Array] {
-      const processor = create('entrainment-processor', options);
-      drive(processor, QUANTUM * blocks);
-      routing(processor, 'off');
+    const OFF_FOR = 20;
+    function afterHistory(soundingBlocks: number | 'always'): [Float64Array, Float64Array] {
+      const seeded = soundingBlocks === 0 ? { ...SOUNDING, twoToneMode: 'off' } : SOUNDING;
+      const processor = create('entrainment-processor', {
+        processorOptions: { params: seeded, smoothingSeconds: 0 },
+      });
+      drive(processor, QUANTUM * 5);
+      glide(processor);
+      if (soundingBlocks === 'always' || soundingBlocks === 0) {
+        drive(processor, QUANTUM * OFF_FOR);
+      } else {
+        drive(processor, QUANTUM * soundingBlocks);
+        routing(processor, 'off');
+        drive(processor, QUANTUM * (OFF_FOR - soundingBlocks));
+        routing(processor, 'dichotic');
+      }
+      if (soundingBlocks === 0) routing(processor, 'dichotic');
+      // Past the fade in, which is what this test is not about.
       drive(processor, QUANTUM * 12);
-      if (thenSwitchOn) routing(processor, 'dichotic');
       return drive(processor, QUANTUM * 64);
     }
 
-    // Three and seven blocks of tone put the frozen phases well apart.
-    const early = afterSounding(3, true);
-    const late = afterSounding(7, true);
-    // Each against its own routing-off continuation, which is the only way to
-    // read the tones alone: the entrainment term underneath is at a different
-    // carrier phase in the two, by construction.
-    const earlyBase = afterSounding(3, false);
-    const lateBase = afterSounding(7, false);
+    const always = afterHistory('always');
 
-    let worst = 0;
-    for (let channel = 0; channel < 2; channel++) {
-      const a = early[channel];
-      const aBase = earlyBase[channel];
-      const b = late[channel];
-      const bBase = lateBase[channel];
-      for (let i = 0; i < a.length; i++) {
-        worst = Math.max(worst, Math.abs(a[i] - aBase[i] - (b[i] - bBase[i])));
-      }
+    // The control: the tones are there to be compared.
+    const without = create('entrainment-processor', {
+      processorOptions: { params: { ...SOUNDING, twoToneMode: 'off' }, smoothingSeconds: 0 },
+    });
+    drive(without, QUANTUM * 5);
+    glide(without);
+    drive(without, QUANTUM * (OFF_FOR + 12));
+    const bare = drive(without, QUANTUM * 64);
+    expect(Math.max(maxDiff(always[0], bare[0]), maxDiff(always[1], bare[1]))).toBeGreaterThan(0.3);
+
+    // Both channels, because in dichotic routing they carry different tones:
+    // comparing the left alone passes a build that anchors only the lower one.
+    for (const history of [0, 3, 7, 18]) {
+      const [left, right] = afterHistory(history);
+      const worst = Math.max(maxDiff(left, always[0]), maxDiff(right, always[1]));
+      // Not exact: the upper tone accumulates its phase in one processor and is
+      // derived from the carrier and modulator in the other.
+      const label = `after ${history} sounding blocks`;
+      expect(`${label}: ${worst < 1e-6 ? 'same' : worst}`).toBe(`${label}: same`);
     }
-    // Not exact: these are differences of `Float32` sums, and the entrainment
-    // term each was rounded against differs. `entrainment.test.ts` makes the
-    // same claim bit-exactly by isolating the tones; this one adds that the
-    // port message path gets there too.
-    expect(worst).toBeLessThan(1e-7);
+  });
+
+  it('fades the tones in when the level brings them back, not only routing', () => {
+    /*
+     * The tones start at the carrier's phase, so their first sample is not
+     * zero, and a routing switch is not the only way to start them. With routing
+     * on and the level at exactly zero — where a dragged Two-tone slider settles
+     * — raising the level used to hand `render` the smoother's first step with
+     * nothing in front of it: up to the full tone amplitude with smoothing off.
+     *
+     * Two measures, because one of them cannot see the smaller case. Peak slew
+     * across the transition, against the same sound left alone, is the routing
+     * test's measure and catches the full-amplitude step at every rate. With
+     * smoothing on, the step is the smoother's first increment — 8.5% of the
+     * level at 48 kHz, 12.5% at 32 kHz — which is comparable to a 220 Hz tone's
+     * own slew, and peak slew flagged it in one case of fifteen. So the first
+     * sample is also required to add exactly nothing, as it is for routing, with
+     * the second required to add something so that tones which never arrived
+     * cannot pass.
+     */
+    const RATES = [32000, 44100, 48000];
+    const SILENT = { ...SOUNDING, twoToneGain: 0 };
+
+    const wasRate = scope.sampleRate;
+    try {
+      for (const rate of RATES) {
+        scope.sampleRate = rate;
+        const blocks = Math.max(1, Math.round((TONE_SWAP_SECONDS * rate) / QUANTUM));
+        for (const smoothingSeconds of [0, 0.03]) {
+          for (const warm of [3, 7, 11, 17, 23]) {
+            const seed = (params: EntrainmentParams) =>
+              create('entrainment-processor', { processorOptions: { params, smoothingSeconds } });
+            const switching = seed(SILENT);
+            const stayed = seed(SILENT);
+            const arrived = seed(SOUNDING);
+
+            const runFor = QUANTUM * 40;
+            const before = drive(switching, QUANTUM * warm);
+            const beforeStayed = drive(stayed, QUANTUM * warm);
+            const beforeArrived = drive(arrived, QUANTUM * warm);
+            switching.port.onmessage?.({
+              data: { type: 'params', params: { twoToneGain: SOUNDING.twoToneGain } },
+            });
+
+            const switched = join(before, drive(switching, runFor));
+            const stayedWhole = join(beforeStayed, drive(stayed, runFor));
+            const arrivedWhole = join(beforeArrived, drive(arrived, runFor));
+
+            const at = QUANTUM * warm;
+            const span = blocks * QUANTUM + QUANTUM;
+            const transition = slew(switched, at, at + span);
+            const steady = Math.max(
+              slew(stayedWhole, 1, stayedWhole[0].length),
+              slew(arrivedWhole, 1, arrivedWhole[0].length),
+              slew(switched, at + span, switched[0].length),
+            );
+
+            const label = `${rate} Hz, smoothing ${smoothingSeconds}, warm ${warm}`;
+            // Non-vacuous: there is a waveform to compare against.
+            expect(steady).toBeGreaterThan(0.02);
+
+            const added = (i: number) =>
+              Math.max(
+                Math.abs(switched[0][i] - stayedWhole[0][i]),
+                Math.abs(switched[1][i] - stayedWhole[1][i]),
+              );
+            expect(`${label}: first sample adds ${added(at)}`).toBe(
+              `${label}: first sample adds 0`,
+            );
+            expect(added(at + 1)).toBeGreaterThan(0);
+
+            expect(
+              `${label}: ${transition <= steady ? 'no step' : `${transition} > ${steady}`}`,
+            ).toBe(`${label}: no step`);
+          }
+        }
+      }
+    } finally {
+      scope.sampleRate = wasRate;
+    }
   });
 });
 describe('gain smoothing', () => {

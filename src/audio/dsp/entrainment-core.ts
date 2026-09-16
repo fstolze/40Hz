@@ -251,37 +251,44 @@ export function render(
   let { carrierPhase, modPhase, toneLoPhase, toneHiPhase } = state;
 
   /*
-   * The tones always begin at zero, so switching them in is silent and repeatable.
+   * The tones start where the carrier and the modulator already are.
    *
-   * `toneLoPhase` and `toneHiPhase` advance only while the tones sound, so without
-   * this they freeze when routing goes to Off and resume from wherever they
-   * stopped. Two things follow, and both were reported.
+   * `toneLoPhase` and `toneHiPhase` advance only while the tones sound, so they
+   * freeze when routing goes to Off and would otherwise resume from wherever they
+   * stopped. `toneLoInc` is `carrierHz / sampleRate` — the lower tone runs at
+   * *exactly* the entrainment carrier — so once sounding its phase against the
+   * carrier is constant, and so is the upper tone's against carrier plus
+   * modulator. A steady tone summed with an amplitude-modulated one at the same
+   * frequency fills the modulation troughs by an amount that relation decides,
+   * anywhere from reinforcing to partly cancelling. Left to wherever the tones
+   * froze, the same recipe sounded different depending on when routing was
+   * switched, and a recipe that does not reproduce is not a recipe.
    *
-   * The first sample back is `sin(TAU * frozenPhase) * twoToneGain`, and a routing
-   * change does not touch the level — that is full amplitude. A frozen phase near
-   * 0 or 0.5 is silent, one near 0.25 or 0.75 is a full-scale step. Which it is
-   * depends on when routing was last switched off, so the click is intermittent,
-   * which is exactly how it was described.
+   * Resetting to zero was the first answer, and it only fixed the relation when
+   * the carrier and modulator happened to be at zero too. They free-run, and a
+   * glide leaves the carrier anywhere, so switching the tones on mid-playback
+   * still set an arbitrary relation — and the integrity checks, whose reference
+   * render starts every phase at zero, warned about correct output: at 48 kHz a
+   * mixed recipe read an 80 Hz envelope against 40, and sidebands 30 dB out.
    *
-   * The second is worse, because it outlasts the transition. `toneLoInc` is
-   * `carrierHz / sampleRate` — the lower tone runs at *exactly* the entrainment
-   * carrier. Both tones advance by the same increment, so their phase relative to
-   * the carrier is constant once sounding, but arbitrary: fixed by whatever phase
-   * they froze at. A steady tone summed with an amplitude-modulated one at the
-   * same frequency fills the modulation troughs by an amount that relationship
-   * decides, anywhere from reinforcing to partly cancelling. So the same preset
-   * sounded different on two runs depending on when routing was switched, and a
-   * recipe that does not reproduce is not a recipe.
+   * So the tones take their phase *from* the carrier and modulator: `lo` equals
+   * the carrier, and `hi` the carrier plus the modulator, which is what the
+   * reference render has at every sample. The relation is then fixed whenever
+   * they start, and it survives everything afterwards: all three advance by the
+   * same carrier step during a glide, and the modulator and `hi` by the same
+   * `modulationHz` when the rate changes, so the differences never move.
    *
-   * Starting from zero answers both at once: `sin(0)` is 0, so there is no step to
-   * hear, and the relation to the carrier is the same every time.
+   * What this gives up is a silent first sample. `sin(TAU * carrierPhase)` is
+   * anything, so the tones must never arrive here at full level — which is the
+   * processor's job, since only it sees the level over more than one block: it
+   * fades them in from zero on every start (see `advanceToneSwap`).
    *
    * An edge and not a reset every block, deliberately — once sounding the tones
    * must free-run, or the beat between them is what would be destroyed.
    */
   if (twoToneActive && !state.toneActive) {
-    toneLoPhase = 0;
-    toneHiPhase = 0;
+    toneLoPhase = carrierPhase;
+    toneHiPhase = wrap(carrierPhase + modPhase);
   }
 
   for (let i = 0; i < frames; i++) {
