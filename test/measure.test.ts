@@ -467,6 +467,38 @@ describe('the entrainment tap against its reference', () => {
     }
   });
 
+  it('stays quiet when the pulse rate is no simple fraction of the sample rate', () => {
+    // Found in review. Where the rate divides the sample rate unevenly, a pulse's
+    // edges fall on different samples in every period, and two starts a fraction
+    // of a sample apart can gate the same samples for thousands of frames and
+    // diverge after. Scored on a short stretch alone they tied to every digit,
+    // the tie went to the wrong one, and this capture — which matches its own
+    // render exactly — read 10.0 dB of spectrum. The shortlist is scored again
+    // over a longer stretch, and the winner's own step is split.
+    const rate = 22050;
+    const p = params({
+      modulationHz: 57.371803375406806,
+      carrierHz: 282.68451921071335,
+      duty: 0.03,
+      edge: 0,
+    });
+    const frames = captureFramesFor(p, rate);
+    const state = createState();
+    state.carrierPhase = 0.8541554100811481;
+    state.modPhase = 0.2700332959648222;
+    const long = renderOffline(p, rate, frames + 435, 128, state);
+    const findings = measureEntrainment(
+      {
+        left: Float32Array.from(long.left.subarray(435)),
+        right: Float32Array.from(long.right.subarray(435)),
+        sampleRate: rate,
+      },
+      p,
+    );
+    const off = findings.filter((f) => f.status !== 'ok').map((f) => `${f.id}: ${f.detail}`);
+    expect(off.join('; ') || 'ok').toBe('ok');
+  });
+
   it('probes the sidebands where the configuration puts them', () => {
     // Not 220 and not 40. A probe at a fixed frequency would measure empty
     // bins here and report a confident absence of sidebands that are present

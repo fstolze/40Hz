@@ -422,12 +422,12 @@ export function measureEntrainment(capture: Capture, params: EntrainmentParams):
    * 2,560 AM recipes (carriers 80 Hz to 8 kHz, duty 2% to 50%, hard and tapered
    * edges, 22.05 to 96 kHz, four alignments, every preset), 2,304 shallow ones
    * (depth 2% to 30%, rates 20 to 60 Hz, carriers 80 Hz to 1 kHz), and 192
-   * mixed ones running both paths; and 600 at 2% duty (22.05 to 48 kHz, carriers
-   * 80 Hz to 1 kHz, hard and tapered edges). Against phase zero the first two
-   * warned 71 and 426 times, and the mixed ones 114 while the tones restarted at
-   * zero; against a reference fitted only to the whole sample, 57 of the 2%-duty
-   * captures warned. Here none of the four sweeps warns, and the worst 2%-duty
-   * spectrum reads 0.8 dB — see `fractionalReference`.
+   * mixed ones running both paths; 600 at 2% duty (22.05 to 48 kHz, carriers
+   * 80 Hz to 1 kHz, hard and tapered edges); and 1,795 drawn at random from the
+   * whole admitted space. Against phase zero the first two warned 71 and 426
+   * times, and the mixed ones 114 while the tones restarted at zero; against a
+   * reference fitted only to the whole sample, 57 of the 2%-duty captures
+   * warned. None of the five sweeps warns here — see `fractionalReference`.
    *
    * Seeded faults, counted only where the healthy capture passes: detection
    * matches the whole-sample reference for every recipe but one, the corner
@@ -907,7 +907,7 @@ function solveSymmetric(g: Float64Array, v: Float64Array, r: number): Float64Arr
  * different set of samples on every edge. At 2% duty, which `sanitizeParams`
  * admits whatever the Duty slider's floor, 57 of 600 healthy captures across
  * 22.05 to 48 kHz read their spectrum past the tolerance, up to 15 dB, against
- * a whole-sample reference.
+ * a whole-sample reference; they now read 0.1 dB at worst.
  *
  * So the reference is rendered from a state rather than cut from a render. The
  * modulator's phase is tried across a sample either side of where the fit put
@@ -963,20 +963,65 @@ function fractionalReference(
     return renderOffline(params, sampleRate, length, 0, state);
   };
 
-  let bestModulator = modulatorPhase;
-  let bestScore = -Infinity;
+  // Each candidate gets its own angle, from a quarter-cycle pair: the fitted
+  // carrier is least reliable exactly where this matters, a low carrier under a
+  // narrow pulse, and a candidate judged at the wrong angle can lose to a wrong
+  // one judged at a luckier one.
+  const scoreAt = (modulator: number, length: number) =>
+    explained(
+      capture,
+      sum(...pair(renderFrom(carrierPhase, modulator, length)), length),
+      sum(...pair(renderFrom(carrierPhase + 0.25, modulator, length)), length),
+      length,
+    ).energy;
+
+  let candidates: number[] = [];
   for (let k = 0; k < FRACTIONAL_STEPS; k += 1) {
-    const shift = (2 * k) / FRACTIONAL_STEPS - 1;
-    const modulator = modulatorPhase + shift * perSample;
-    // Each candidate gets its own angle, from a quarter-cycle pair: the fitted
-    // carrier is least reliable exactly where this matters, a low carrier under
-    // a narrow pulse, and a candidate judged at the wrong angle can lose to a
-    // wrong one judged at a luckier one.
-    const y = sum(...pair(renderFrom(carrierPhase, modulator, probe)), probe);
-    const z = sum(...pair(renderFrom(carrierPhase + 0.25, modulator, probe)), probe);
-    const score = explained(capture, y, z, probe).energy;
-    if (score > bestScore) [bestScore, bestModulator] = [score, modulator];
+    candidates.push(modulatorPhase + ((2 * k) / FRACTIONAL_STEPS - 1) * perSample);
   }
+
+  /*
+   * Narrowed on a short stretch, then decided on a long one.
+   *
+   * A short stretch cannot always tell two candidates apart. Where the pulse
+   * rate is no simple fraction of the sample rate, its edges fall differently
+   * in every period, and two starts that gate the same samples for the length
+   * of the probe diverge later: at 57.37 Hz on 22.05 kHz, the true start and
+   * one 0.094 of a sample away explained a 4,096-frame probe equally, to every
+   * digit, and the tie went to the wrong one — 10.0 dB of spectrum against a
+   * capture that matches its own render exactly. Over 16,384 frames they
+   * separate. So the probe only shortlists, and the survivors are scored again
+   * over as much of the window as the shortlist can afford.
+   */
+  const narrow = (length: number, keep: number) => {
+    const scored = candidates.map((modulator) => ({
+      modulator,
+      score: scoreAt(modulator, length),
+    }));
+    scored.sort((a, b) => b.score - a.score);
+    candidates = scored.slice(0, keep).map((entry) => entry.modulator);
+  };
+
+  const long = Math.min(frames, probe * 8);
+  narrow(probe, FRACTIONAL_SHORTLIST);
+  narrow(long, 1);
+
+  /*
+   * Then a step finer, around the winner.
+   *
+   * The grid's own spacing is the floor on how well it can land: at 64 steps
+   * across two samples the review's 57.37 Hz capture still read 2.3 dB. A finer
+   * grid costs the whole probe stage again — 256 steps put a pass at 72 ms —
+   * while splitting the winner's own step costs a handful of long renders.
+   */
+  const step = (2 * perSample) / FRACTIONAL_STEPS;
+  const winner = candidates[0] ?? modulatorPhase;
+  for (let k = 1; k < FRACTIONAL_REFINE; k += 1) {
+    const shift = (k / FRACTIONAL_REFINE) * step;
+    candidates.push(winner - shift, winner + shift);
+  }
+  narrow(long, 1);
+  const bestModulator = candidates[0] ?? modulatorPhase;
 
   // The angle again, against the chosen edges and over the whole window.
   const inPhase = renderFrom(carrierPhase, bestModulator, frames);
@@ -1036,14 +1081,25 @@ function explained(
  *
  * A whole sample, not half: the whole-sample fit can itself be most of a sample
  * out — 0.68 in one capture, where a half-sample search left it reading 8.3 dB.
- * Over 600 healthy 2%-duty captures (22.05 to 48 kHz, carriers 80 Hz to 1 kHz,
- * hard and tapered edges, five alignments, three window starts) the worst
- * spectrum reading is 0.8 dB with 64 candidates on 4,096 frames, the same as on
- * 8,192, and 1.0 dB with 32. Against a whole-sample reference it was 15 dB, and
- * 57 of them warned.
+ * 64 candidates on 4,096 frames read as well as on 8,192, and better than 32.
+ *
+ * The probe only shortlists, because it cannot always separate candidates: see
+ * `narrow` below. Eight survivors are enough for every capture swept, and the
+ * winner's own step is then split four ways, which is where the last of the
+ * precision comes from — a grid fine enough to match it costs the probe stage
+ * again, 72 ms a pass against 48.
+ *
+ * Swept healthy: 600 captures at 2% duty (22.05 to 48 kHz, carriers 80 Hz to
+ * 1 kHz, hard and tapered edges, five alignments, three window starts) read
+ * 0.1 dB at worst; 1,200 more at 2% and 3% with other carriers and tapers,
+ * 0.2 dB; and 1,795 drawn at random from the whole admitted space — rate,
+ * carrier, duty, edge, depth, gains, routing, both phases, window start and
+ * sample rate together, three seeds — 3.1 dB. None of them warns.
  */
 const FRACTIONAL_STEPS = 64;
 const FRACTIONAL_PROBE_FRAMES = 4096;
+const FRACTIONAL_SHORTLIST = 8;
+const FRACTIONAL_REFINE = 4;
 
 /**
  * Both channels of the reference, turned to `angle`.
