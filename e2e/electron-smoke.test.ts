@@ -3913,6 +3913,23 @@ describe('history and recipe recall', () => {
     // announcements, and it comes first in the document.
     const live = page.locator('.history-view [role=status][aria-live=polite]');
     assert.equal(await live.count(), 1, 'the view needs a live region at all');
+    /*
+     * What the region already says, captured before the deletion that is under
+     * test.
+     *
+     * The region is never cleared, and this panel is not remounted between the
+     * tests that share the History view — so an earlier test's successful
+     * Clear leaves "2 sessions deleted." sitting in it. Waiting for the text
+     * to merely contain "deleted" was satisfied by that sentence the instant
+     * it was asked, and the assertion beneath then read the stale one: CI
+     * failed here with `actual: '2 sessions deleted.'` and passed on a rerun,
+     * because on a faster machine the new announcement usually landed first.
+     *
+     * Requiring text that is *different* is what makes this wait about this
+     * deletion. The assertion still carries the content, so a deletion that
+     * announces the wrong count fails on the assertion rather than timing out.
+     */
+    const alreadySaid = (await live.textContent()) ?? '';
 
     await page
       .locator('.records > li')
@@ -3920,10 +3937,11 @@ describe('history and recipe recall', () => {
       .getByRole('button', { name: /^Delete / })
       .click();
     await page.locator('dialog[open]').getByRole('button', { name: 'Delete session' }).click();
-    await until('the announcement', async () =>
-      ((await live.textContent()) ?? '').includes('deleted') ? true : null,
-    );
-    assert.match((await live.textContent()) ?? '', /0 remaining/);
+    const announced = await until('this deletion to be announced', async () => {
+      const text = (await live.textContent()) ?? '';
+      return text !== alreadySaid && text.includes('deleted') ? text : null;
+    });
+    assert.match(announced, /0 remaining/);
   });
 
   it('confirms Clear, empties the log, and leaves the recipe alone', async () => {
