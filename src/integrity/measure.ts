@@ -422,15 +422,17 @@ export function measureEntrainment(capture: Capture, params: EntrainmentParams):
    * 2,560 AM recipes (carriers 80 Hz to 8 kHz, duty 2% to 50%, hard and tapered
    * edges, 22.05 to 96 kHz, four alignments, every preset), 2,304 shallow ones
    * (depth 2% to 30%, rates 20 to 60 Hz, carriers 80 Hz to 1 kHz), and 192
-   * mixed ones running both paths. Against phase zero those warned 71, 426 and
-   * 114 times; here the shallow and mixed sweeps warn none.
+   * mixed ones running both paths; and 600 at 2% duty (22.05 to 48 kHz, carriers
+   * 80 Hz to 1 kHz, hard and tapered edges). Against phase zero the first two
+   * warned 71 and 426 times, and the mixed ones 114 while the tones restarted at
+   * zero; against a reference fitted only to the whole sample, 57 of the 2%-duty
+   * captures warned. Here none of the four sweeps warns, and the worst 2%-duty
+   * spectrum reads 0.8 dB — see `fractionalReference`.
    *
-   * The nine that remain in the AM sweep are all at 2% duty, which the Duty
-   * slider's 5% floor does not reach, and all at 22.05 kHz: the window's start
-   * is fitted to the nearest sample, and a hard edge landing half a sample off
-   * moves a band more than the tolerance there. Searching alignments used to
-   * absorb that, and absorbing is what let a displaced tone hide. Every seeded
-   * fault in the detection comparison is caught as before.
+   * Seeded faults, counted only where the healthy capture passes: detection
+   * matches the whole-sample reference for every recipe but one, the corner
+   * `waveformAlignment` records, where a shallow pulse running 2 Hz fast — inside
+   * the rate tolerance — is now matched by a reference as well.
    */
   let reference: { left: Float64Array; right: Float64Array };
   let spectrumDb: number;
@@ -446,8 +448,13 @@ export function measureEntrainment(capture: Capture, params: EntrainmentParams):
       renderOffline(params, sampleRate, frames + lead),
     );
     const found = waveformAlignment([left, right], aligned, frames, lead, params);
-    const window = aligned.map((part) => windowOf(part, found.offset, frames));
-    reference = referenceAt(window, found.angle);
+    reference =
+      params.amGain > 0
+        ? fractionalReference([left, right], params, sampleRate, frames, found)
+        : referenceAt(
+            aligned.map((part) => windowOf(part, found.offset, frames)),
+            found.angle,
+          );
     spectrumDb = spectralDeviationDb([left, right], [reference.left, reference.right]);
   }
 
@@ -887,6 +894,156 @@ function solveSymmetric(g: Float64Array, v: Float64Array, r: number): Float64Arr
   for (let j = 0; j < r; j += 1) x[j] /= a[j * r + j];
   return x;
 }
+
+/**
+ * The reference rendered where the capture actually started, to a fraction of a
+ * sample.
+ *
+ * `waveformAlignment` places the window to the nearest sample, and for most
+ * recipes that is exact enough. It is not for a hard-gated pulse a few samples
+ * wide. The engine decides which samples a pulse covers from where its
+ * modulator's phase falls between them, and a live capture's modulator starts
+ * at any real phase — so a reference started a whole sample away can gate a
+ * different set of samples on every edge. At 2% duty, which `sanitizeParams`
+ * admits whatever the Duty slider's floor, 57 of 600 healthy captures across
+ * 22.05 to 48 kHz read their spectrum past the tolerance, up to 15 dB, against
+ * a whole-sample reference.
+ *
+ * So the reference is rendered from a state rather than cut from a render. The
+ * modulator's phase is tried across a sample either side of where the fit put
+ * it, each candidate rendered as a quarter-cycle pair and scored by how much of
+ * a short stretch of the capture that pair explains at its own best angle. The
+ * fitted carrier is only where the pairs start, not what they are judged at: a
+ * low carrier under a narrow pulse carries too little energy to pin it, and one
+ * capture's came out 37 degrees from the truth — enough, judged there, for the
+ * wrong candidate to win and the spectrum to read 6.8 dB. The best candidate is
+ * rendered in full, and the angle read again over the whole window.
+ *
+ * Judged on the waveform, like the alignment it refines — never on the
+ * spectrum it will be compared by. A shift of under a sample moves where a
+ * pulse's edges fall; it cannot move a tone to another frequency, so it has
+ * nothing to hide a displaced tone with.
+ *
+ * The tones need nothing of their own here: the engine starts them from the
+ * carrier's and the modulator's phases, so a render from this state starts
+ * them where the capture has them.
+ */
+function fractionalReference(
+  measured: Float64Array[],
+  params: EntrainmentParams,
+  sampleRate: number,
+  frames: number,
+  found: { angle: number; offset: number },
+): { left: Float64Array; right: Float64Array } {
+  const wrap = (phase: number) => phase - Math.floor(phase);
+  const carrierPhase = wrap(
+    (found.offset * params.carrierHz) / sampleRate + found.angle / (2 * Math.PI),
+  );
+  const modulatorPhase = (found.offset * params.modulationHz) / sampleRate;
+  const perSample = params.modulationHz / sampleRate;
+
+  // At least two modulation periods, so every candidate is judged on whole pulses.
+  const probe = Math.min(
+    frames,
+    Math.max(FRACTIONAL_PROBE_FRAMES, Math.ceil((2 * sampleRate) / params.modulationHz)),
+  );
+  const sum = (a: Float64Array, b: Float64Array, length: number) => {
+    const out = new Float64Array(length);
+    for (let i = 0; i < length; i += 1) out[i] = a[i] + b[i];
+    return out;
+  };
+  const capture = sum(measured[0], measured[1], frames);
+
+  const pair = (render: { left: Float64Array; right: Float64Array }) =>
+    [render.left, render.right] as const;
+  const renderFrom = (carrier: number, modulator: number, length: number) => {
+    const state = createState();
+    state.carrierPhase = wrap(carrier);
+    state.modPhase = wrap(modulator);
+    return renderOffline(params, sampleRate, length, 0, state);
+  };
+
+  let bestModulator = modulatorPhase;
+  let bestScore = -Infinity;
+  for (let k = 0; k < FRACTIONAL_STEPS; k += 1) {
+    const shift = (2 * k) / FRACTIONAL_STEPS - 1;
+    const modulator = modulatorPhase + shift * perSample;
+    // Each candidate gets its own angle, from a quarter-cycle pair: the fitted
+    // carrier is least reliable exactly where this matters, a low carrier under
+    // a narrow pulse, and a candidate judged at the wrong angle can lose to a
+    // wrong one judged at a luckier one.
+    const y = sum(...pair(renderFrom(carrierPhase, modulator, probe)), probe);
+    const z = sum(...pair(renderFrom(carrierPhase + 0.25, modulator, probe)), probe);
+    const score = explained(capture, y, z, probe).energy;
+    if (score > bestScore) [bestScore, bestModulator] = [score, modulator];
+  }
+
+  // The angle again, against the chosen edges and over the whole window.
+  const inPhase = renderFrom(carrierPhase, bestModulator, frames);
+  const quadrature = renderFrom(carrierPhase + 0.25, bestModulator, frames);
+  const { angle } = explained(
+    capture,
+    sum(inPhase.left, inPhase.right, frames),
+    sum(quadrature.left, quadrature.right, frames),
+    frames,
+  );
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const turn = (x: Float64Array, y: Float64Array) => {
+    const out = new Float64Array(frames);
+    for (let i = 0; i < frames; i += 1) out[i] = c * x[i] + s * y[i];
+    return out;
+  };
+  return {
+    left: turn(inPhase.left, quadrature.left),
+    right: turn(inPhase.right, quadrature.right),
+  };
+}
+
+/**
+ * How much of `x` the pair `p`, `q` explains at their best combination, and the
+ * angle of that combination: `x ≈ a·p + b·q`, energy `v·g⁻¹·v`, angle `atan2(b, a)`.
+ * Energy rather than residual, so the capture's level cannot choose.
+ */
+function explained(
+  x: Float64Array,
+  p: Float64Array,
+  q: Float64Array,
+  length: number,
+): { energy: number; angle: number } {
+  let pp = 0;
+  let qq = 0;
+  let pq = 0;
+  let xp = 0;
+  let xq = 0;
+  for (let i = 0; i < length; i += 1) {
+    pp += p[i] * p[i];
+    qq += q[i] * q[i];
+    pq += p[i] * q[i];
+    xp += x[i] * p[i];
+    xq += x[i] * q[i];
+  }
+  const determinant = pp * qq - pq * pq;
+  if (!(determinant > 0)) return { energy: -Infinity, angle: 0 };
+  const a = (xp * qq - xq * pq) / determinant;
+  const b = (xq * pp - xp * pq) / determinant;
+  return { energy: a * xp + b * xq, angle: Math.atan2(b, a) };
+}
+
+/**
+ * Candidates across a whole sample either side of the fitted start, and how
+ * much of the capture scores them.
+ *
+ * A whole sample, not half: the whole-sample fit can itself be most of a sample
+ * out — 0.68 in one capture, where a half-sample search left it reading 8.3 dB.
+ * Over 600 healthy 2%-duty captures (22.05 to 48 kHz, carriers 80 Hz to 1 kHz,
+ * hard and tapered edges, five alignments, three window starts) the worst
+ * spectrum reading is 0.8 dB with 64 candidates on 4,096 frames, the same as on
+ * 8,192, and 1.0 dB with 32. Against a whole-sample reference it was 15 dB, and
+ * 57 of them warned.
+ */
+const FRACTIONAL_STEPS = 64;
+const FRACTIONAL_PROBE_FRAMES = 4096;
 
 /**
  * Both channels of the reference, turned to `angle`.

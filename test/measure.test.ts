@@ -379,6 +379,94 @@ describe('the entrainment tap against its reference', () => {
     }
   });
 
+  it('notices a pair tone moved onto an AM sideband, at the alignment playing', () => {
+    // With AM and a dichotic pair, the right ear's tone moved off 260 Hz onto
+    // another of the AM path's sidebands. Found in review of #1 at 300 Hz, where
+    // main read 7.0 dB — under the tolerance — because the spectrum chose the
+    // closest of every alignment it could turn the reference to. Once the tones
+    // turn with the carrier that search already catches 300 Hz from alignment
+    // zero, so that case is kept only as the report. The rest are captures the
+    // search still explained away and the waveform's alignment does not: judged
+    // against the closest turn they read 2.9, 5.5 and 2.2 dB.
+    //
+    // Each control rebuilds the channel from the same parts with the tone where
+    // it belongs, so a warning is about the tone and not the reconstruction.
+    const cases = [
+      { twoToneGain: 0.2, hz: 300, alignment: 0, offset: 0 },
+      { twoToneGain: 0.2, hz: 180, alignment: 0.37, offset: 613 },
+      { twoToneGain: 0.1, hz: 300, alignment: 0.8, offset: 97 },
+      { twoToneGain: 0.1, hz: 180, alignment: 0.37, offset: 613 },
+    ];
+    for (const { twoToneGain, hz, alignment, offset } of cases) {
+      const p = params({ amGain: 0.5, twoToneGain, twoToneMode: 'dichotic' });
+      const state = () => {
+        const s = createState();
+        s.carrierPhase = alignment;
+        return s;
+      };
+      const full = renderOffline(p, SR, FRAMES + offset, 0, state());
+      const amOnly = renderOffline({ ...p, twoToneGain: 0 }, SR, FRAMES + offset, 0, state());
+      const left = full.left.slice(offset);
+      const partner = new Float64Array(FRAMES);
+      for (let i = 0; i < FRAMES; i += 1) {
+        partner[i] = full.right[i + offset] - amOnly.right[i + offset];
+      }
+      const level = rms(partner) * Math.SQRT2;
+      const rebuilt = new Float64Array(FRAMES);
+      const moved = new Float64Array(FRAMES);
+      for (let i = 0; i < FRAMES; i += 1) {
+        rebuilt[i] = amOnly.right[i + offset] + partner[i];
+        moved[i] =
+          amOnly.right[i + offset] + level * Math.sin((2 * Math.PI * hz * (i + offset)) / SR);
+      }
+      const spectrum = (right: Float64Array) =>
+        byId(measureEntrainment({ left, right, sampleRate: SR }, p), 'graph-spectrum').status;
+      const at = `pair at ${twoToneGain}, moved to ${hz} Hz, alignment ${alignment}`;
+      expect(`${at}, rebuilt: ${spectrum(rebuilt)}`).toBe(`${at}, rebuilt: ok`);
+      expect(`${at}: ${spectrum(moved)}`).toBe(`${at}: warning`);
+    }
+  });
+
+  it('stays quiet for a hard 2% pulse wherever its edges fall between samples', () => {
+    // Found in review. A pulse this narrow covers a handful of samples, and which
+    // ones depends on where the modulator's phase falls between them. With the
+    // window fitted to a whole sample, 57 of 600 healthy 2%-duty captures warned,
+    // up to 15 dB. 2% is below the Duty slider's floor, but `sanitizeParams`
+    // admits it, so the checks owe it a true answer.
+    //
+    // Each case fails without one part of the fractional reference: the first
+    // against a whole-sample reference; the second with the search only half a
+    // sample wide, because the whole-sample fit is 0.68 of a sample out; the
+    // third with every candidate judged at the fitted carrier instead of its own
+    // angle, where it read 9.8 dB.
+    const cases = [
+      { rate: 22050, carrierHz: 120, edge: 0, carrier: 0.3, modulator: 0.111 },
+      { rate: 22050, carrierHz: 1000, edge: 0, carrier: 0.9, modulator: 0.333, offset: 613 },
+      { rate: 22050, carrierHz: 600, edge: 0.5, carrier: 0.05, modulator: 0.0305, offset: 613 },
+      { rate: 32000, carrierHz: 220, edge: 0, carrier: 0.55, modulator: 0.2035, offset: 1237 },
+      { rate: 44100, carrierHz: 440, edge: 0, carrier: 0.1, modulator: 0.037, offset: 613 },
+    ];
+    for (const { rate, carrierHz, edge, carrier, modulator, offset = 0 } of cases) {
+      const p = params({ carrierHz, duty: 0.02, edge });
+      const frames = captureFramesFor(p, rate);
+      const state = createState();
+      state.carrierPhase = carrier;
+      state.modPhase = modulator;
+      const long = renderOffline(p, rate, frames + offset, 128, state);
+      const findings = measureEntrainment(
+        {
+          left: Float32Array.from(long.left.subarray(offset)),
+          right: Float32Array.from(long.right.subarray(offset)),
+          sampleRate: rate,
+        },
+        p,
+      );
+      const label = `${carrierHz} Hz, edge ${edge}, at ${rate}`;
+      const off = findings.filter((f) => f.status !== 'ok').map((f) => `${f.id}: ${f.detail}`);
+      expect(`${label}: ${off.join('; ') || 'ok'}`).toBe(`${label}: ok`);
+    }
+  });
+
   it('probes the sidebands where the configuration puts them', () => {
     // Not 220 and not 40. A probe at a fixed frequency would measure empty
     // bins here and report a confident absence of sidebands that are present
