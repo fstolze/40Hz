@@ -423,7 +423,7 @@ export function measureEntrainment(capture: Capture, params: EntrainmentParams):
    * edges, 22.05 to 96 kHz, four alignments, every preset), 2,304 shallow ones
    * (depth 2% to 30%, rates 20 to 60 Hz, carriers 80 Hz to 1 kHz), and 192
    * mixed ones running both paths; 600 at 2% duty (22.05 to 48 kHz, carriers
-   * 80 Hz to 1 kHz, hard and tapered edges); and 1,795 drawn at random from the
+   * 80 Hz to 1 kHz, hard and tapered edges); and 2,793 drawn at random from the
    * whole admitted space. Against phase zero the first two warned 71 and 426
    * times, and the mixed ones 114 while the tones restarted at zero; against a
    * reference fitted only to the whole sample, 57 of the 2%-duty captures
@@ -907,7 +907,7 @@ function solveSymmetric(g: Float64Array, v: Float64Array, r: number): Float64Arr
  * different set of samples on every edge. At 2% duty, which `sanitizeParams`
  * admits whatever the Duty slider's floor, 57 of 600 healthy captures across
  * 22.05 to 48 kHz read their spectrum past the tolerance, up to 15 dB, against
- * a whole-sample reference; they now read 0.1 dB at worst.
+ * a whole-sample reference; they now read 0.4 dB at worst.
  *
  * So the reference is rendered from a state rather than cut from a render. The
  * modulator's phase is tried across a sample either side of where the fit put
@@ -943,6 +943,7 @@ function fractionalReference(
   const perSample = params.modulationHz / sampleRate;
 
   // At least two modulation periods, so every candidate is judged on whole pulses.
+  const modulator = (candidate: Candidate) => candidate.modulator;
   const probe = Math.min(
     frames,
     Math.max(FRACTIONAL_PROBE_FRAMES, Math.ceil((2 * sampleRate) / params.modulationHz)),
@@ -967,17 +968,38 @@ function fractionalReference(
   // carrier is least reliable exactly where this matters, a low carrier under a
   // narrow pulse, and a candidate judged at the wrong angle can lose to a wrong
   // one judged at a luckier one.
-  const scoreAt = (modulator: number, length: number) =>
+  // A pair while the angle is unknown, and a single render once it is: past the
+  // probe every candidate carries its own angle, and rendering it turned costs
+  // half of rendering both quarters again.
+  const scoreAsPair = (modulator: number, length: number) =>
     explained(
       capture,
       sum(...pair(renderFrom(carrierPhase, modulator, length)), length),
       sum(...pair(renderFrom(carrierPhase + 0.25, modulator, length)), length),
       length,
-    ).energy;
+    );
+  const scoreTurned = (candidate: Candidate, length: number) => {
+    const turned = sum(
+      ...pair(
+        renderFrom(carrierPhase + candidate.angle / (2 * Math.PI), modulator(candidate), length),
+      ),
+      length,
+    );
+    let xy = 0;
+    let yy = 0;
+    for (let i = 0; i < length; i += 1) {
+      xy += capture[i] * turned[i];
+      yy += turned[i] * turned[i];
+    }
+    return yy > 0 ? (xy * xy) / yy : -Infinity;
+  };
 
-  let candidates: number[] = [];
+  let candidates: Candidate[] = [];
   for (let k = 0; k < FRACTIONAL_STEPS; k += 1) {
-    candidates.push(modulatorPhase + ((2 * k) / FRACTIONAL_STEPS - 1) * perSample);
+    candidates.push({
+      modulator: modulatorPhase + ((2 * k) / FRACTIONAL_STEPS - 1) * perSample,
+      angle: 0,
+    });
   }
 
   /*
@@ -993,18 +1015,49 @@ function fractionalReference(
    * separate. So the probe only shortlists, and the survivors are scored again
    * over as much of the window as the shortlist can afford.
    */
-  const narrow = (length: number, keep: number) => {
-    const scored = candidates.map((modulator) => ({
-      modulator,
-      score: scoreAt(modulator, length),
-    }));
+  /*
+   * Narrowed by doubling the stretch, and a tie is never broken by ordering.
+   *
+   * A short stretch cannot always tell candidates apart. Where the pulse rate is
+   * no simple fraction of the sample rate its edges fall differently in every
+   * period, so starts a fraction of a sample apart gate the same samples for
+   * thousands of frames and diverge later. They then explain the short stretch
+   * *identically*, to the last bit: at 102.34 Hz on 48 kHz, 26 of 64 candidates
+   * tied at 4,096 frames and the true one sorted tenth among them, so a
+   * shortlist of eight dropped it and the spectrum read 10.5 dB. Over 32,768
+   * frames it is the single best.
+   *
+   * So every candidate within a hair of the best survives, the stretch doubles,
+   * and it repeats until one is left or the window runs out. The budget bounds
+   * the work: a doubling that would cost more than `FRACTIONAL_BUDGET` frames of
+   * rendering keeps only the best few, which are equal at that length anyway,
+   * and at the full window four still survive to be judged there.
+   */
+  const narrow = (length: number, withAngle: boolean) => {
+    const scored = candidates.map((candidate) => {
+      if (!withAngle) return { candidate, score: scoreTurned(candidate, length) };
+      const fit = scoreAsPair(modulator(candidate), length);
+      return {
+        candidate: { modulator: modulator(candidate), angle: fit.angle },
+        score: fit.energy,
+      };
+    });
     scored.sort((a, b) => b.score - a.score);
-    candidates = scored.slice(0, keep).map((entry) => entry.modulator);
+    const best = scored[0].score;
+    const tied = scored.filter(
+      (entry) => entry.score >= best - FRACTIONAL_TIE * Math.abs(best),
+    ).length;
+    const afford = Math.max(4, Math.floor(FRACTIONAL_BUDGET / length));
+    candidates = scored.slice(0, Math.max(1, Math.min(tied, afford))).map((e) => e.candidate);
   };
 
-  const long = Math.min(frames, probe * 8);
-  narrow(probe, FRACTIONAL_SHORTLIST);
-  narrow(long, 1);
+  let length = probe;
+  narrow(length, true);
+  while (candidates.length > 1 && length < frames) {
+    length = Math.min(frames, length * 2);
+    narrow(length, false);
+  }
+  const long = frames;
 
   /*
    * Then a step finer, around the winner.
@@ -1015,13 +1068,17 @@ function fractionalReference(
    * while splitting the winner's own step costs a handful of long renders.
    */
   const step = (2 * perSample) / FRACTIONAL_STEPS;
-  const winner = candidates[0] ?? modulatorPhase;
+  const winner = candidates[0] ?? { modulator: modulatorPhase, angle: 0 };
+  candidates = [winner];
   for (let k = 1; k < FRACTIONAL_REFINE; k += 1) {
     const shift = (k / FRACTIONAL_REFINE) * step;
-    candidates.push(winner - shift, winner + shift);
+    candidates.push(
+      { modulator: winner.modulator - shift, angle: winner.angle },
+      { modulator: winner.modulator + shift, angle: winner.angle },
+    );
   }
-  narrow(long, 1);
-  const bestModulator = candidates[0] ?? modulatorPhase;
+  narrow(long, false);
+  const bestModulator = modulator(candidates[0] ?? winner);
 
   // The angle again, against the chosen edges and over the whole window.
   const inPhase = renderFrom(carrierPhase, bestModulator, frames);
@@ -1084,21 +1141,29 @@ function explained(
  * 64 candidates on 4,096 frames read as well as on 8,192, and better than 32.
  *
  * The probe only shortlists, because it cannot always separate candidates: see
- * `narrow` below. Eight survivors are enough for every capture swept, and the
- * winner's own step is then split four ways, which is where the last of the
- * precision comes from — a grid fine enough to match it costs the probe stage
- * again, 72 ms a pass against 48.
+ * `narrow` below. The winner's own step is then split four ways, which is where
+ * the last of the precision comes from — a grid fine enough to match it costs
+ * the probe stage again, 72 ms a pass against 55.
  *
  * Swept healthy: 600 captures at 2% duty (22.05 to 48 kHz, carriers 80 Hz to
  * 1 kHz, hard and tapered edges, five alignments, three window starts) read
- * 0.1 dB at worst; 1,200 more at 2% and 3% with other carriers and tapers,
- * 0.2 dB; and 1,795 drawn at random from the whole admitted space — rate,
+ * 0.4 dB at worst; 1,200 more at 2% and 3% with other carriers and tapers,
+ * 0.2 dB; and 2,793 drawn at random from the whole admitted space — rate,
  * carrier, duty, edge, depth, gains, routing, both phases, window start and
- * sample rate together, three seeds — 3.1 dB. None of them warns.
+ * sample rate together, four seeds — 2.1 dB. None of them warns.
  */
 const FRACTIONAL_STEPS = 64;
 const FRACTIONAL_PROBE_FRAMES = 4096;
-const FRACTIONAL_SHORTLIST = 8;
+/** One start being tried: a modulator phase, and the angle it was last fitted at. */
+interface Candidate {
+  modulator: number;
+  angle: number;
+}
+
+/** Within this fraction of the best score is a tie, not a ranking. */
+const FRACTIONAL_TIE = 1e-9;
+/** Frames of rendering a single narrowing round may spend on candidates. */
+const FRACTIONAL_BUDGET = 1 << 17;
 const FRACTIONAL_REFINE = 4;
 
 /**
