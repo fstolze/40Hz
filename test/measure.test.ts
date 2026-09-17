@@ -467,6 +467,45 @@ describe('the entrainment tap against its reference', () => {
     }
   });
 
+  it('stays quiet when candidates tie past the shortlist, or only part at the end', () => {
+    // Found in review. Two starts a fraction of a sample apart can gate the same
+    // samples for thousands of frames and diverge later, so a short stretch
+    // explains them identically, to the last bit. At 102.34 Hz on 48 kHz, 26 of
+    // 64 candidates tied at 4,096 frames and the true one sorted tenth among
+    // them: a shortlist of eight dropped it and the spectrum read 10.5 dB. The
+    // second case separated only well past 32,768 frames, which a capped stretch
+    // never reached — 12.6 dB. Ties now survive to the next doubling, and the
+    // doubling runs to the whole window.
+    const cases = [
+      { rate: 48000, modulationHz: 102.34280775650589, carrierHz: 294.70926817907593 },
+      { rate: 44100, modulationHz: 160.94839354540022, carrierHz: 94.22888213049643 },
+    ];
+    for (const { rate, modulationHz, carrierHz } of cases) {
+      const p = params({ modulationHz, carrierHz, duty: 0.03, edge: 0 });
+      const frames = captureFramesFor(p, rate);
+      for (const [carrierPhase, modPhase, offset] of [
+        [0.3141, 0.6535, 613],
+        [0.05, 0.9, 0],
+      ] as const) {
+        const state = createState();
+        state.carrierPhase = carrierPhase;
+        state.modPhase = modPhase;
+        const long = renderOffline(p, rate, frames + offset, 128, state);
+        const findings = measureEntrainment(
+          {
+            left: Float32Array.from(long.left.subarray(offset)),
+            right: Float32Array.from(long.right.subarray(offset)),
+            sampleRate: rate,
+          },
+          p,
+        );
+        const at = `${modulationHz.toFixed(2)} Hz at ${rate}, start ${offset}`;
+        const off = findings.filter((f) => f.status !== 'ok').map((f) => `${f.id}: ${f.detail}`);
+        expect(`${at}: ${off.join('; ') || 'ok'}`).toBe(`${at}: ok`);
+      }
+    }
+  });
+
   it('stays quiet when the pulse rate is no simple fraction of the sample rate', () => {
     // Found in review. Where the rate divides the sample rate unevenly, a pulse's
     // edges fall on different samples in every period, and two starts a fraction
