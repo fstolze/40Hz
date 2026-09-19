@@ -67,11 +67,6 @@ pull request to `main`. It does not package or publish anything.
 
 ## Build and package
 
-> [!WARNING]
-> **Packaging is broken on Windows.** `scripts/dist.mjs` spawns `electron-builder.cmd` without a
-> shell, which current Node refuses to launch, so `npm run dist` and `npm run dist:dir` fail there.
-> macOS and Linux are unaffected.
-
 `npm run dist` produces, for the platform you run it on:
 
 - macOS: `.dmg` for Apple silicon (arm64) and Intel (x64)
