@@ -17,7 +17,7 @@ a ready-made build instead, use [Releases](https://github.com/fstolze/40Hz/relea
 ```bash
 git clone https://github.com/fstolze/40Hz.git
 cd 40Hz
-npm install
+npm ci
 npm run dev
 ```
 
@@ -98,6 +98,15 @@ the AppImage, so those still need a check by hand on a clean machine.
 
 ## Notes
 
+- The `minimatch` override selects the patched v11 release for build and lint dependencies still
+  requesting v9 or v10 (GHSA-g3hv-75wg-m249). Keep older major versions used by other dependencies
+  on their own compatible releases. Remove the override when the upstream dependencies adopt v11.
+- `npm audit` still reports two low-severity findings from the Svelte Vite plugin's `deepmerge`
+  dependency (GHSA-gcqx-w48m-w2h4), which has no published patch. This dependency merges build
+  configuration; it is not bundled into the application. Recheck when updating the plugin.
+- Electron's packaging dependencies still include deprecated `glob`, `inflight`, `rimraf`, and `boolean`
+  releases. These require upstream updates; replacing their major versions through overrides can
+  break packaging.
 - The repository uses LF line endings everywhere, pinned by `.gitattributes`. A checkout converted
   to CRLF fails `npm run lint` on every file.
 - For contributor process and the project's traps and invariants, see [AGENTS.md](../AGENTS.md).
