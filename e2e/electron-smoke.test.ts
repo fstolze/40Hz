@@ -4114,9 +4114,29 @@ if (args[0] === 'monitor') {
     await closeStudio();
     assert.equal(await visible(), false);
     const binary = await own.evaluate(({ app: running }) => running.getPath('exe'));
-    const second = spawn(binary, ['e2e/bootstrap.mjs'], { env: trayEnvironment, stdio: 'ignore' });
+    // Playwright adds --no-sandbox to every Linux launch it makes; this process is
+    // spawned directly, so it has to carry the flag itself. Without it Electron
+    // aborts before the single-instance handshake wherever its sandbox cannot
+    // start — a GitHub Ubuntu runner, or root — and all this test sees is a
+    // timeout. Its stderr is kept so a failure here says why.
+    const second = spawn(binary, ['--no-sandbox', 'e2e/bootstrap.mjs'], {
+      env: trayEnvironment,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    second.stderr.setEncoding('utf8');
+    second.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
     try {
-      await until('second launch reopening Studio', async () => (await visible()) || null);
+      try {
+        await until('second launch reopening Studio', async () => (await visible()) || null);
+      } catch (error) {
+        throw new Error(
+          `${(error as Error).message}; second instance stderr: ${stderr.trim() || '(none)'}`,
+          { cause: error },
+        );
+      }
       assert.equal(closed, false);
     } finally {
       second.kill();
