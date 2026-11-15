@@ -18,11 +18,14 @@
 
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { delimiter } from 'node:path';
 import { join } from 'node:path';
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright';
 import type { SessionConfiguration } from '../src/audio/configuration.ts';
-import type { Settings } from '../src/session/settings.ts';
+import { DEFAULT_SETTINGS, type Settings } from '../src/session/settings.ts';
 import { MAX_MASTER_LEVEL } from '../src/audio/graph.ts';
 import { notchChain, notchSettleSeconds, peakGainBound } from '../src/audio/dsp/biquad.ts';
 import { transitionPeakBound } from '../src/audio/graph.ts';
@@ -167,7 +170,10 @@ async function history(
 // never completes would otherwise hang until the CI job limit.
 before(
   async () => {
-    app = await electron.launch({ args: ['e2e/bootstrap.mjs'], timeout: LAUNCH_TIMEOUT_MS });
+    app = await electron.launch({
+      args: [process.platform === 'linux' ? 'e2e/no-tray-bootstrap.mjs' : 'e2e/bootstrap.mjs'],
+      timeout: LAUNCH_TIMEOUT_MS,
+    });
     await app.firstWindow();
     page = await windowShowing('index.html');
     popover = await windowShowing('session.html');
@@ -296,7 +302,7 @@ describe('the preload bridge', () => {
     assert.deepEqual(surface?.theme, ['subscribe']);
     // One direction, one window: the popover can ask for Studio and nothing
     // else. A general show-or-move-a-window surface would be a lever.
-    assert.deepEqual(surface?.windows, ['setPopoverHeight', 'showStudio']);
+    assert.deepEqual(surface?.windows, ['setPopoverHeight', 'showStudio', 'subscribeTray']);
     // Present in every window — the main process checks the sender — and
     // enumerated here because it was the one group this assertion omitted
     // entirely, so anything added to it was unproven while the test claimed to
@@ -910,7 +916,7 @@ describe('a window the app did not open', () => {
                 // is not structured-cloneable, so passing one to the others
                 // fails at the IPC boundary *before* the guard runs, which
                 // would look like a refusal while testing nothing.
-                const takesListener = name === 'subscribe' || name === 'register';
+                const takesListener = name === 'subscribe' || name === 'subscribeTray' || name === 'register';
                 await (takesListener ? surface[name](() => {}) : surface[name]());
                 results[group + '.' + name] = 'RESOLVED';
               } catch (error) {
@@ -1387,11 +1393,19 @@ describe('settings', () => {
     await dialog.waitFor();
 
     const toggle = dialog.getByRole('checkbox', { name: /running in the tray/ });
-    if (process.platform === 'linux') {
-      // Closing always quits there, because a constructed tray is not evidence
-      // of a visible one, so the control would decide nothing.
+    await until(
+      'tray setting loaded',
+      async () =>
+        (await toggle.count()) > 0 ||
+        (await dialog.getByText(/No supported tray is available/).count()) > 0 ||
+        null,
+    );
+    const available = (await toggle.count()) > 0;
+    if (process.platform === 'linux')
+      assert.equal(available, false, 'the shared suite uses the no-tray fixture');
+    if (!available) {
       assert.equal(await toggle.count(), 0);
-      assert.match(String(await dialog.textContent()), /quits 40 Hz on this platform/);
+      assert.match(String(await dialog.textContent()), /No supported tray is available/);
     } else {
       assert.equal(await toggle.count(), 1);
       // On by default: tray residency is what the window closing is for.
@@ -2006,8 +2020,9 @@ describe('appearance, and what it is not allowed to touch', () => {
    * The tray reads the *system* theme, not the app's.
    *
    * `tray.ts` picks its icon ink from `nativeTheme.shouldUseDarkColors` — on
-   * Linux because there is no system/app split to read, and on Windows when the
-   * registry cannot be. That global is writable through `nativeTheme.themeSource`,
+   * non-GNOME Linux as a fallback, and on Windows when the registry cannot be.
+   * Standard GNOME uses light ink because its panel stays dark; Classic keeps
+   * the fallback. That global is writable through `nativeTheme.themeSource`,
    * so an app that assigned its own appearance there would be telling the tray
    * the desktop had changed. On a dark desktop with the app set to Light, the
    * tray would then draw dark ink onto a dark panel.
@@ -3968,5 +3983,408 @@ describe('history and recipe recall', () => {
     assert.equal(await page.locator('.empty').count(), 1, 'the empty state takes over');
     await toStudio();
     assert.equal(await carrier(), recipeBefore, 'clearing history changes no recipe');
+  });
+});
+
+/** A protocol fixture, not a production automation flag or a real desktop change. */
+describe('Linux tray residency', { skip: process.platform !== 'linux' }, () => {
+  let own: ElectronApplication;
+  let studio: Page;
+  let profile: string;
+  let fixture: string;
+  let statusFile: string;
+  let failNextRead: string;
+  let readLog: string;
+  let trayEnvironment: NodeJS.ProcessEnv;
+  let closed = false;
+
+  before(
+    async () => {
+      fixture = await mkdtemp(join(tmpdir(), 'fortyhz-tray-'));
+      profile = await mkdtemp(join(tmpdir(), 'fortyhz-e2e-'));
+      statusFile = join(fixture, 'available');
+      failNextRead = join(fixture, 'fail-next-read');
+      readLog = join(fixture, 'reads');
+      await writeFile(statusFile, 'true');
+      const command = join(fixture, 'gdbus');
+      await writeFile(
+        command,
+        `#!/usr/bin/env node
+const fs = require('node:fs');
+const status = ${JSON.stringify(statusFile)};
+const failNext = ${JSON.stringify(failNextRead)};
+const readLog = ${JSON.stringify(readLog)};
+const args = process.argv.slice(2);
+if (args[0] === 'monitor') {
+  console.log('The name org.kde.StatusNotifierWatcher is owned by :1.42');
+  fs.watchFile(status, { interval: 50 }, () => {
+    if (fs.readFileSync(status, 'utf8') === 'monitor-exit') process.exit(7);
+    console.log('StatusNotifierHostRegistered');
+  });
+} else if (args.includes('org.freedesktop.DBus.GetConnectionUnixProcessID')) {
+  console.log('(uint32 ' + (args.includes(':1.43') ? 1 : process.ppid) + ',)');
+} else {
+  if (fs.existsSync(failNext)) {
+    fs.unlinkSync(failNext);
+    fs.appendFileSync(readLog, 'failed' + String.fromCharCode(10));
+    process.exit(1);
+  }
+  fs.appendFileSync(readLog, 'ok' + String.fromCharCode(10));
+  const state = fs.readFileSync(status, 'utf8');
+  const registered = state === 'foreign' ? ':1.43/StatusNotifierItem' : ':1.42/StatusNotifierItem';
+  console.log("({'IsStatusNotifierHostRegistered': <" + (state !== 'false') + ">, 'RegisteredStatusNotifierItems': <['" + registered + "']>},)");
+}
+`,
+      );
+      await chmod(command, 0o755);
+      trayEnvironment = {
+        ...process.env,
+        PATH: `${fixture}${delimiter}${process.env.PATH}`,
+        FORTYHZ_E2E_USERDATA: profile,
+      };
+      own = await electron.launch({
+        args: ['e2e/bootstrap.mjs'],
+        env: trayEnvironment as Record<string, string>,
+        timeout: LAUNCH_TIMEOUT_MS,
+      });
+      own.once('close', () => {
+        closed = true;
+      });
+      await own.firstWindow();
+      studio = await until(
+        'Studio page',
+        async () =>
+          own.windows().find((candidate) => candidate.url().endsWith('index.html')) ?? null,
+      );
+      studio.setDefaultTimeout(10_000);
+      await studio.waitForLoadState('domcontentloaded');
+      await studio.getByRole('button', { name: 'Settings' }).click();
+      await studio.getByRole('checkbox', { name: /running in the tray/ }).waitFor();
+      await studio.keyboard.press('Escape');
+      await studio.getByRole('dialog').waitFor({ state: 'hidden' });
+    },
+    { timeout: LAUNCH_TIMEOUT_MS + 10_000 },
+  );
+
+  after(
+    async () => {
+      await own?.close().catch(() => undefined);
+      if (fixture) await rm(fixture, { recursive: true, force: true });
+      if (profile) await rm(profile, { recursive: true, force: true });
+    },
+    { timeout: 30_000 },
+  );
+
+  const closeStudio = () =>
+    own.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()
+        .find((win) => win.webContents.getURL().endsWith('index.html'))!
+        .close();
+    });
+  const visible = () =>
+    own.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows().find((candidate) =>
+        candidate.webContents.getURL().endsWith('index.html'),
+      );
+      return Boolean(win && !win.isDestroyed() && win.isVisible());
+    });
+
+  it('offers the setting, hides without destroying the audio renderer, and restores through the bridge', async () => {
+    await studio.getByRole('button', { name: 'Settings' }).click();
+    const toggle = studio.getByRole('checkbox', { name: /running in the tray/ });
+    await toggle.waitFor();
+    assert.equal(await toggle.isChecked(), true);
+    await studio.keyboard.press('Escape');
+    await studio.getByRole('dialog').waitFor({ state: 'hidden' });
+    await studio.evaluate(
+      (configuration) => window.desktop!.session.preview(configuration),
+      TEST_CONFIGURATION,
+    );
+    await closeStudio();
+    // Settle rather than polling an immediate isDestroyed() reading.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(await visible(), false);
+    assert.equal(await studio.getByRole('button', { name: /Stop preview/ }).count(), 1);
+    await studio.evaluate(() => window.desktop!.windows.showStudio());
+    assert.equal(await visible(), true);
+    await studio.evaluate(() => window.desktop!.session.stop('stopped'));
+  });
+
+  it('relaunching with the same profile restores the hidden existing window', async () => {
+    await closeStudio();
+    assert.equal(await visible(), false);
+    const binary = await own.evaluate(({ app: running }) => running.getPath('exe'));
+    const second = spawn(binary, ['e2e/bootstrap.mjs'], { env: trayEnvironment, stdio: 'ignore' });
+    try {
+      await until('second launch reopening Studio', async () => (await visible()) || null);
+      assert.equal(closed, false);
+    } finally {
+      second.kill();
+    }
+  });
+
+  it('keeps a session and the setting alive through one failed read without another signal', async () => {
+    await studio.evaluate(
+      (configuration) =>
+        window.desktop!.session.start({ presetId: 'focus', plannedSeconds: 30, configuration }),
+      TEST_CONFIGURATION,
+    );
+    await studio.getByRole('button', { name: 'Settings' }).click();
+    await studio.getByRole('checkbox', { name: /running in the tray/ }).waitFor();
+    await studio.evaluate(() => {
+      const probe = { unsupported: false };
+      (window as unknown as { __trayReadProbe: typeof probe }).__trayReadProbe = probe;
+      const observer = new MutationObserver(() => {
+        if (document.body.textContent?.includes('No supported tray is available'))
+          probe.unsupported = true;
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      (window as unknown as { __stopTrayReadProbe: () => void }).__stopTrayReadProbe = () =>
+        observer.disconnect();
+    });
+    try {
+      await writeFile(readLog, '');
+      await writeFile(failNextRead, 'once');
+      await writeFile(statusFile, 'transient');
+      await until('a failed read followed by an automatic retry', async () => {
+        const log = await readFile(readLog, 'utf8');
+        return /failed\nok\n/.test(log) || null;
+      });
+      assert.equal(
+        await studio.evaluate(
+          () =>
+            (window as unknown as { __trayReadProbe: { unsupported: boolean } }).__trayReadProbe
+              .unsupported,
+        ),
+        false,
+      );
+      assert.equal(await studio.getByRole('checkbox', { name: /running in the tray/ }).count(), 1);
+    } finally {
+      await studio.evaluate(() =>
+        (window as unknown as { __stopTrayReadProbe: () => void }).__stopTrayReadProbe(),
+      );
+    }
+    await studio.keyboard.press('Escape');
+    await studio.getByRole('dialog').waitFor({ state: 'hidden' });
+    await closeStudio();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(await visible(), false);
+    await own.evaluate(({ app: running }) => {
+      running.emit('activate');
+    });
+    await studio.evaluate(() => window.desktop!.session.stop('stopped'));
+  });
+
+  it('does not offer residency for another app’s registered tray item', async () => {
+    await studio.getByRole('button', { name: 'Settings' }).click();
+    await studio.getByRole('checkbox', { name: /running in the tray/ }).waitFor();
+    await writeFile(statusFile, 'foreign');
+    await studio.getByText(/No supported tray is available/).waitFor();
+    assert.equal(await studio.getByRole('checkbox', { name: /running in the tray/ }).count(), 0);
+    await writeFile(statusFile, 'true');
+    await studio.getByRole('checkbox', { name: /running in the tray/ }).waitFor();
+    await studio.keyboard.press('Escape');
+    await studio.getByRole('dialog').waitFor({ state: 'hidden' });
+  });
+
+  it('reveals Studio on host loss, withdraws the setting, and recovers when support returns', async () => {
+    await closeStudio();
+    await writeFile(statusFile, 'false');
+    await until('Studio after host loss', async () => (await visible()) || null);
+    await studio.getByRole('button', { name: 'Settings' }).click();
+    await studio.getByText(/No supported tray is available/).waitFor();
+    assert.equal(await studio.getByRole('checkbox', { name: /running in the tray/ }).count(), 0);
+    await writeFile(statusFile, 'true');
+    await studio.getByRole('checkbox', { name: /running in the tray/ }).waitFor();
+    await studio.keyboard.press('Escape');
+    await studio.getByRole('dialog').waitFor({ state: 'hidden' });
+    await closeStudio();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(await visible(), false);
+    await own.evaluate(({ app: running }) => {
+      running.emit('activate');
+    });
+    assert.equal(await visible(), true);
+  });
+
+  it('honors preference-off and finalizes a session before quitting', async () => {
+    await studio.getByRole('button', { name: 'Settings' }).click();
+    await studio.getByRole('checkbox', { name: /running in the tray/ }).uncheck();
+    await studio.keyboard.press('Escape');
+    await studio.getByRole('dialog').waitFor({ state: 'hidden' });
+    await studio.evaluate(
+      (configuration) =>
+        window.desktop!.session.start({ presetId: 'focus', plannedSeconds: 30, configuration }),
+      TEST_CONFIGURATION,
+    );
+    await closeStudio().catch(() => undefined);
+    await until('app quit', async () => closed || null);
+    const saved = JSON.parse(await readFile(join(profile, 'history.json'), 'utf8'));
+    assert.equal(saved.records.length, 2);
+    assert.equal(saved.records[0].completionReason, 'stopped');
+  });
+
+  it('quits cleanly without a tray host even when the preference is enabled', async () => {
+    await writeFile(statusFile, 'false');
+    closed = false;
+    own = await electron.launch({
+      args: ['e2e/bootstrap.mjs'],
+      env: trayEnvironment as Record<string, string>,
+      timeout: LAUNCH_TIMEOUT_MS,
+    });
+    own.once('close', () => {
+      closed = true;
+    });
+    await own.firstWindow();
+    studio = await until(
+      'Studio page',
+      async () => own.windows().find((candidate) => candidate.url().endsWith('index.html')) ?? null,
+    );
+    studio.setDefaultTimeout(10_000);
+    await studio.waitForLoadState('domcontentloaded');
+    await studio.evaluate((settings) => window.desktop!.settings.save(settings), {
+      ...DEFAULT_SETTINGS,
+      closeToTray: true,
+    });
+    await until('session executor ready', async () => {
+      await studio.evaluate(
+        (configuration) =>
+          window.desktop!.session.start({ presetId: 'focus', plannedSeconds: 30, configuration }),
+        TEST_CONFIGURATION,
+      );
+      return true;
+    });
+    await studio.getByRole('button', { name: 'Settings' }).click();
+    await studio.getByText(/No supported tray is available/).waitFor();
+    await studio.keyboard.press('Escape');
+    await studio.getByRole('dialog').waitFor({ state: 'hidden' });
+    await closeStudio().catch(() => undefined);
+    await until('app quit without tray host', async () => closed || null);
+    const saved = JSON.parse(await readFile(join(profile, 'history.json'), 'utf8'));
+    assert.equal(saved.records.length, 3);
+    assert.ok(
+      saved.records.every(
+        (record: { completionReason: string }) => record.completionReason === 'stopped',
+      ),
+    );
+  });
+  it('logs monitor death once and reveals the hidden window', async () => {
+    await writeFile(statusFile, 'true');
+    closed = false;
+    own = await electron.launch({
+      args: ['e2e/bootstrap.mjs'],
+      env: trayEnvironment as Record<string, string>,
+      timeout: LAUNCH_TIMEOUT_MS,
+    });
+    own.once('close', () => {
+      closed = true;
+    });
+    await own.firstWindow({ timeout: LAUNCH_TIMEOUT_MS });
+    studio = await until(
+      'Studio page',
+      async () => own.windows().find((candidate) => candidate.url().endsWith('index.html')) ?? null,
+    );
+    studio.setDefaultTimeout(10_000);
+    let diagnostics = '';
+    own.process().stderr?.on('data', (chunk) => {
+      diagnostics += String(chunk);
+    });
+    await studio.getByRole('button', { name: 'Settings' }).click();
+    await studio.getByRole('checkbox', { name: /running in the tray/ }).waitFor();
+    await studio.keyboard.press('Escape');
+    await studio.getByRole('dialog').waitFor({ state: 'hidden' });
+    await closeStudio();
+    await writeFile(statusFile, 'monitor-exit');
+    await until(
+      'monitor failure diagnostic',
+      async () => diagnostics.includes('[main] tray monitoring stopped') || null,
+    );
+    await until('Studio after monitor death', async () => (await visible()) || null);
+    await studio.getByRole('button', { name: 'Settings' }).click();
+    await studio.getByText(/No supported tray is available/).waitFor();
+    assert.match(diagnostics, /gdbus monitor exited \(7\)/);
+    assert.equal(diagnostics.split('[main] tray monitoring stopped').length - 1, 1);
+    await studio.keyboard.press('Escape');
+    await studio.getByRole('dialog').waitFor({ state: 'hidden' });
+  });
+});
+
+describe('GNOME tray contrast', { skip: process.platform !== 'linux' }, () => {
+  for (const { desktop, light } of [
+    { desktop: 'ubuntu:GNOME', light: true },
+    { desktop: 'GNOME-Classic:GNOME', light: false },
+    { desktop: 'GNOME:GNOME-Classic', light: false },
+  ]) {
+    it(`loads the appropriate glyph in ${desktop} with light applications`, async () => {
+      const own = await electron.launch({
+        args: ['e2e/tray-appearance-bootstrap.mjs'],
+        env: { ...process.env, XDG_CURRENT_DESKTOP: desktop } as Record<string, string>,
+        timeout: LAUNCH_TIMEOUT_MS,
+      });
+      let profile: string | undefined;
+      try {
+        await own.firstWindow({ timeout: LAUNCH_TIMEOUT_MS });
+        profile = await own.evaluate(({ app: running }) => running.getPath('userData'));
+        assert.ok(profile.startsWith(join(tmpdir(), 'fortyhz-e2e-')));
+        const result = await own.evaluate(({ nativeTheme }) => ({
+          dark: nativeTheme.shouldUseDarkColors,
+          images: (
+            globalThis as unknown as {
+              __fortyhzTrayImages: { opaquePixels: number; brightness: number }[];
+            }
+          ).__fortyhzTrayImages,
+        }));
+        assert.equal(result.dark, false, 'this exercises the light-application/dark-panel case');
+        assert.ok(result.images.length > 0, 'the real tray loaded an image');
+        for (const image of result.images) {
+          assert.ok(image.opaquePixels > 0, 'the glyph contains visible pixels');
+          assert.ok(
+            light ? image.brightness >= 240 : image.brightness <= 15,
+            `expected ${light ? 'white' : 'black'} tray ink in ${desktop}, got brightness ${image.brightness}`,
+          );
+        }
+      } finally {
+        await own.close().catch(() => undefined);
+        if (profile?.startsWith(join(tmpdir(), 'fortyhz-e2e-')))
+          await rm(profile, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+describe('tray capability pending', () => {
+  it('shows a neutral loading message until the initial capability reply arrives', async () => {
+    const own = await electron.launch({
+      args: ['e2e/tray-pending-bootstrap.mjs'],
+      timeout: LAUNCH_TIMEOUT_MS,
+    });
+    let profile: string | undefined;
+    try {
+      await own.firstWindow({ timeout: LAUNCH_TIMEOUT_MS });
+      profile = await own.evaluate(({ app: running }) => running.getPath('userData'));
+      assert.ok(profile.startsWith(join(tmpdir(), 'fortyhz-e2e-')));
+      const studio = await until(
+        'Studio page',
+        async () =>
+          own.windows().find((candidate) => candidate.url().endsWith('index.html')) ?? null,
+      );
+      studio.setDefaultTimeout(10_000);
+      await studio.getByRole('button', { name: 'Settings' }).click();
+      await studio.getByText('Checking tray availability…').waitFor();
+      assert.equal(await studio.getByText(/No supported tray is available/).count(), 0);
+      assert.equal(await studio.getByText(/On GNOME/).count(), 0);
+      await own.evaluate(() =>
+        (globalThis as unknown as { __releaseTrayReply: () => void }).__releaseTrayReply(),
+      );
+      await studio.getByText('Checking tray availability…').waitFor({ state: 'hidden' });
+      await studio.getByText(/No supported tray is available/).waitFor();
+      if (process.platform !== 'linux') assert.equal(await studio.getByText(/On GNOME/).count(), 0);
+      await studio.keyboard.press('Escape');
+      await studio.getByRole('dialog').waitFor({ state: 'hidden' });
+    } finally {
+      await own.close().catch(() => undefined);
+      if (profile?.startsWith(join(tmpdir(), 'fortyhz-e2e-')))
+        await rm(profile, { recursive: true, force: true });
+    }
   });
 });

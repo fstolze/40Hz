@@ -7,6 +7,7 @@
    * has to say so plainly, because a number with a limit's shape will be read
    * as a limit unless it is told otherwise.
    */
+  import { subscribeTrayAvailability } from '../lib/tray.ts';
   import { settingsStore } from '../lib/stores.ts';
   import { listeningTime } from '../lib/format.ts';
   import { DEFAULT_SETTINGS, type Appearance, type Settings } from '../../session/settings.ts';
@@ -35,15 +36,12 @@
    */
   const canLaunchAtLogin = supportedPlatform && packaged;
 
-  /**
-   * Offered only where it decides anything.
-   *
-   * On Linux closing always quits, because a constructed tray there is not
-   * evidence of a visible one and hiding behind a tray that never appeared
-   * strands a running session. A checkbox that cannot change that would be a
-   * control quietly doing nothing.
-   */
-  const canCloseToTray = supportedPlatform;
+  let canCloseToTray = $state<boolean | null>(null);
+  $effect(() =>
+    subscribeTrayAvailability((available) => {
+      canCloseToTray = available;
+    }),
+  );
 
   const APPEARANCE_OPTIONS: { value: Appearance; label: string }[] = [
     { value: 'light', label: 'Light' },
@@ -159,7 +157,9 @@
 {#if isDesktop}
   <section>
     <h3>Closing the window</h3>
-    {#if canCloseToTray}
+    {#if canCloseToTray === null}
+      <p class="note">Checking tray availability…</p>
+    {:else if canCloseToTray}
       <label class="check">
         <input
           type="checkbox"
@@ -177,9 +177,11 @@
       </p>
     {:else}
       <p class="note">
-        Closing the window quits 40 Hz on this platform. Whether a tray icon appears depends on the
-        desktop environment, and hiding behind one that never appeared would leave a session playing
-        with no way to reach it.
+        No supported tray is available. Closing the window quits 40 Hz and records any playing
+        session first.
+        {#if platform === 'linux'}
+          On GNOME, enable AppIndicator support to use the tray.
+        {/if}
       </p>
     {/if}
   </section>

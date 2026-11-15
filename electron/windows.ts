@@ -142,17 +142,16 @@ export interface StudioHooks {
    */
   audioLost(why: string): void;
   /**
-   * Whether a tray icon was constructed.
+   * Whether tray residency is currently available.
    *
-   * Read at close time rather than at creation: the tray is established after
-   * this window exists. What it means for hiding is `studioCloseAction`'s
-   * decision, not this window's.
+   * Read at close time: Linux hosts and tray registration may appear or
+   * disappear while this window exists.
    */
-  trayConstructed(): boolean;
+  trayAvailable(): boolean;
   /**
    * The user's "keep running in the tray" setting.
    *
-   * Read at close time, like `trayConstructed`, so changing it in Settings
+   * Read at close time, like `trayAvailable`, so changing it in Settings
    * applies to the next close rather than the next launch.
    */
   closeToTray(): boolean;
@@ -244,9 +243,8 @@ export function createStudioWindow(hooks: StudioHooks, appearance: Appearance): 
   win.on('close', (event) => {
     const action = studioCloseAction({
       quitting: isQuitting(),
-      trayConstructed: hooks.trayConstructed(),
+      trayAvailable: hooks.trayAvailable(),
       closeToTray: hooks.closeToTray(),
-      platform: process.platform,
     });
     if (action === 'close') return;
     event.preventDefault();

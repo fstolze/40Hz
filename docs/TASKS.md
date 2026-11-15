@@ -606,9 +606,11 @@ finalizing any running session first. Best-effort now means the tray is a conven
 works rather than a load-bearing part of the app.
 
 **Amended again, with a setting.** Hiding on close is now the default rather than the only
-behaviour: `closeToTray` turns it off, and closing quits. It is offered on macOS and Windows only —
-on Linux closing already always quits, so a control there would decide nothing, the same reason
-launch at login is absent rather than present and ineffective.
+behaviour: `closeToTray` turns it off, and closing quits. Linux now offers the same setting when
+a StatusNotifier host and this app's own tray item are registered. Main monitors the session bus
+through GLib's `gdbus`; missing support fails closed to quit-on-close. Losing support reveals a
+hidden Studio, and a second launch reopens the existing instance. Launch at login remains absent
+on Linux, where that separate control has no implementation.
 
 **Should CI build distributables?** → **No. Builds are manual, per platform.**
 

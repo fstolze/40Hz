@@ -24,11 +24,14 @@ import {
 } from './ipc.ts';
 import {
   beginQuit,
+  isQuitting,
   createPopover,
   createStudioWindow,
   revealStudio,
   type Popover,
 } from './windows.ts';
+import { TrayAvailability, monitorTray } from './tray-availability.ts';
+import { linuxTrayProbe } from './linux-tray.ts';
 import { createTray, type TrayHandle, type TraySessionState } from './tray.ts';
 import { installApplicationMenu } from './app-menu.ts';
 import { ExecutorLink } from '../src/session/executor-link.ts';
@@ -141,7 +144,19 @@ if (process.platform === 'win32') app.setAppUserModelId('us.stolze.fortyhz');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 
+// A desktop launcher must reopen the existing hidden Studio, not start a
+// second audio engine. Attach before ready; store initialization may await I/O.
+let reopenStudio: (() => void) | null = null;
+let reopenRequested = false;
+app.on('second-instance', () => {
+  if (reopenStudio) reopenStudio();
+  else reopenRequested = true;
+});
+const primaryInstance = app.requestSingleInstanceLock();
+if (!primaryInstance) app.quit();
+
 void app.whenReady().then(async () => {
+  if (!primaryInstance) return;
   // Before any window exists, so no window is ever drawn with the default menu.
   installApplicationMenu();
 
@@ -183,7 +198,7 @@ void app.whenReady().then(async () => {
    * Setting it from the app's appearance looked appealing — it is the obvious
    * way to tell Chromium what theme the app is in — but it is global, and
    * `tray.ts` reads `nativeTheme.shouldUseDarkColors` back out of it to choose
-   * the tray icon's ink on Linux and as the Windows fallback. Assigning the
+   * the tray icon's ink on non-GNOME Linux and as the Windows fallback. Assigning the
    * app's preference there means a user choosing Light on a dark desktop also
    * tells the tray the system is light, and the tray then draws dark ink onto
    * a dark panel. Measured: `themeSource = 'light'` flips
@@ -297,13 +312,7 @@ void app.whenReady().then(async () => {
 
   let studio: BrowserWindow | null = null;
 
-  /**
-   * Whether a tray icon was constructed.
-   *
-   * A function rather than a value: the tray is established after Studio
-   * exists, and Studio's close handler runs long after both.
-   */
-  let trayConstructed = (): boolean => false;
+  const trayAvailability = new TrayAvailability();
 
   const openStudio = (): BrowserWindow => {
     studio = createStudioWindow(
@@ -317,9 +326,9 @@ void app.whenReady().then(async () => {
           designateExecutor(win.webContents);
         },
         audioLost: (why) => sessionInterrupt?.(why),
-        trayConstructed: () => trayConstructed(),
+        trayAvailable: () => trayAvailability.current === true,
         closeToTray: () => store.settings().closeToTray,
-        // Closing Studio ends the app on Linux, and anywhere without a tray.
+        // Closing Studio ends the app when tray residency is unavailable or off.
         // Quitting rather than closing, so the quit path below can finalize a
         // running session while this renderer is still there to answer.
         quitRequested: () => {
@@ -338,6 +347,10 @@ void app.whenReady().then(async () => {
   };
 
   openStudio();
+  reopenStudio = () => {
+    if (!isQuitting()) showStudio();
+  };
+  if (reopenRequested) reopenStudio();
 
   const popover: Popover = createPopover(
     {
@@ -351,6 +364,7 @@ void app.whenReady().then(async () => {
   );
 
   registerWindowHandlers({
+    trayAvailability,
     showStudio,
     setPopoverHeight: (pixels) => popover.setHeight(pixels),
   });
@@ -402,7 +416,18 @@ void app.whenReady().then(async () => {
     console.warn(`[main] could not register the global hotkey ${HOTKEY}; it is already in use`);
   }
 
-  trayConstructed = () => tray !== null;
+  let previouslyAvailable = false;
+  trayAvailability.subscribe((available) => {
+    const lost = previouslyAvailable && !available;
+    previouslyAvailable = available;
+    if (lost && !isQuitting() && studio && (studio.isDestroyed() || !studio.isVisible()))
+      showStudio();
+  });
+  const stopTrayMonitor =
+    tray && process.platform === 'linux'
+      ? monitorTray(linuxTrayProbe(process.pid), trayAvailability)
+      : () => {};
+  if (!tray || process.platform !== 'linux') trayAvailability.set(tray !== null);
 
   app.on('activate', () => {
     // Not the usual `getAllWindows().length === 0` test: Studio hides rather
@@ -444,6 +469,7 @@ void app.whenReady().then(async () => {
   });
 
   app.on('will-quit', () => {
+    stopTrayMonitor();
     globalShortcut.unregisterAll();
     // Tray icons outlive the app on some Windows shells if not removed.
     tray?.destroy();

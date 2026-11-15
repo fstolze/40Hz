@@ -104,8 +104,13 @@ function needsLightInk(): boolean {
     // them deliberately. The system-integrated one is a transition behind.
     return dark ?? nativeTheme.shouldUseDarkColors;
   }
-  // Linux has no system/app split to read; the GTK theme is the best signal
-  // available, and a wrong guess is a cosmetic miss on a best-effort tray.
+  // GNOME's standard panel is dark even when GTK applications use light mode.
+  // Electron reports the application theme, not the Shell panel's background.
+  // Ubuntu includes GNOME in its colon-separated desktop list (ubuntu:GNOME).
+  const desktops = (process.env.XDG_CURRENT_DESKTOP ?? '').toLowerCase().split(':');
+  // Classic's light panel follows the application-theme fallback instead.
+  if (desktops.includes('gnome') && !desktops.includes('gnome-classic')) return true;
+  // Other Linux panels retain their existing application-theme fallback.
   return nativeTheme.shouldUseDarkColors;
 }
 

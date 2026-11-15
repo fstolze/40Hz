@@ -21,13 +21,8 @@ export type CloseAction = 'hide' | 'close' | 'quit';
 export interface CloseState {
   /** The user is quitting; nothing may refuse to close. */
   quitting: boolean;
-  /**
-   * `new Tray()` returned without throwing.
-   *
-   * Deliberately not called `hasTray`: on Linux it is not evidence that any
-   * icon is visible. See `studioCloseAction`.
-   */
-  trayConstructed: boolean;
+  /** A constructed tray with a registered host and item on Linux. */
+  trayAvailable: boolean;
   /**
    * The user's setting: whether closing Studio should leave the app running.
    *
@@ -35,7 +30,6 @@ export interface CloseState {
    * `studioCloseAction` still refuses where hiding could strand the app.
    */
   closeToTray: boolean;
-  platform: NodeJS.Platform;
 }
 
 /**
@@ -45,18 +39,10 @@ export interface CloseState {
  * destroying this window would take the audio graph with it. It is only safe
  * while the user can certainly get back to a window.
  *
- * On macOS and Windows a constructed `Tray` really is displayed, so hiding is
- * safe. On Linux it is not: the icon appears only where the desktop provides a
- * StatusNotifierItem host — GNOME needs an extension — and where there is
- * none, `new Tray()` still returns an object and throws nothing. Trusting it
- * there hid the window behind a tray that did not exist, leaving a session
- * playing with no window, no icon, and no way to stop it short of killing the
- * process. Being wrong in this direction strands the user; being wrong the
- * other way merely quits an app they asked to close.
- *
- * The global hotkey is deliberately not counted. It is undiscoverable, it may
- * fail to register, and a user who does not know it exists is as stuck as one
- * with no hotkey at all.
+ * Linux availability also requires a running StatusNotifier host and this
+ * process's registered item. Host loss reveals Studio again; relaunching the
+ * app is an independent recovery path. A constructed Tray alone proves none
+ * of those things.
  *
  * `closeToTray` off short-circuits all of that: the user has asked for the
  * window to be the app, so closing it quits. That is always safe — quitting
@@ -67,8 +53,7 @@ export function studioCloseAction(state: CloseState): CloseAction {
   // Already on the way out: this is the close that actually ends the window.
   if (state.quitting) return 'close';
   if (!state.closeToTray) return 'quit';
-  if (state.platform === 'linux') return 'quit';
-  return state.trayConstructed ? 'hide' : 'quit';
+  return state.trayAvailable ? 'hide' : 'quit';
 }
 
 /**

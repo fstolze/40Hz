@@ -196,14 +196,22 @@ renderer loads by URL.
 
 **A constructed `Tray` is not a visible tray on Linux.** Where the desktop provides no
 StatusNotifierItem host — GNOME without the extension — `new Tray()` returns an object, throws
-nothing, and displays nothing. There is no API to ask. Never make lifecycle depend on it: doing so
-hid Studio behind a tray that did not exist and left a session playing with no way to stop it.
+nothing, and displays nothing. Electron has no visibility API to ask. Linux lifecycle therefore
+uses the monitored host and this process's item registration from `electron/linux-tray.ts`, never
+the constructor alone. Host loss must reveal hidden Studio; relaunching must restore the existing
+instance. Missing `gdbus`, an unreadable bus, or failed monitoring leaves residency unavailable.
 
 **Half the `Tray` API is platform-specific, and the typings do not say so.** `getBounds()` and
 `popUpContextMenu()` are macOS and Windows only; `setTitle()` is macOS only; balloons are Windows
 only. `tray.on('click')` is never delivered on Linux. Calling `setContextMenu()` on macOS also
 takes over the left click, which is why the menu is popped up explicitly there. Check the
 platform matrix in the Electron docs before reaching for a `Tray` method — the compiler will not.
+
+**GNOME's panel theme is separate from the GTK application theme.**
+`nativeTheme.shouldUseDarkColors` can be false while the Shell panel is dark. Standard GNOME uses the light
+tray glyph independently of that application signal; GNOME Classic retains the theme fallback; choosing the black glyph from a light GTK
+setting makes it disappear into the panel. Recognize GNOME inside `XDG_CURRENT_DESKTOP`'s
+colon-separated list, including Ubuntu's `ubuntu:GNOME`.
 
 **`node:test` has no default timeout.** A hung test, hook, or Electron shutdown runs until the CI
 job limit rather than failing. Both suites pass `--test-timeout`, and the Electron hooks carry

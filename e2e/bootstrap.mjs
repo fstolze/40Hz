@@ -18,7 +18,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const directory = mkdtempSync(join(tmpdir(), 'fortyhz-e2e-'));
+const directory = process.env.FORTYHZ_E2E_USERDATA ?? mkdtempSync(join(tmpdir(), 'fortyhz-e2e-'));
 app.setPath('userData', directory);
 
 // The test reads this back to assert on what actually reached disk.

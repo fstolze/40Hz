@@ -20,9 +20,8 @@ describe('closing Studio where the tray is real', () => {
     // this window would take the audio graph with it.
     const action = studioCloseAction({
       quitting: false,
-      trayConstructed: true,
+      trayAvailable: true,
       closeToTray: true,
-      platform: 'darwin',
     });
     expect(action).toBe('hide');
   });
@@ -30,9 +29,8 @@ describe('closing Studio where the tray is real', () => {
   it('hides on Windows when a tray was constructed', () => {
     const action = studioCloseAction({
       quitting: false,
-      trayConstructed: true,
+      trayAvailable: true,
       closeToTray: true,
-      platform: 'win32',
     });
     expect(action).toBe('hide');
   });
@@ -43,25 +41,21 @@ describe('closing Studio where the tray is real', () => {
     // stopped cleanly — only recorded as an interruption after the fact.
     const action = studioCloseAction({
       quitting: false,
-      trayConstructed: false,
+      trayAvailable: false,
       closeToTray: true,
-      platform: 'win32',
     });
     expect(action).toBe('quit');
   });
 });
 
 describe('closing Studio on Linux', () => {
-  it('quits even though a tray was constructed', () => {
-    // The reported bug. `new Tray()` returns an object and throws nothing on a
-    // desktop with no StatusNotifierItem host — GNOME without the extension —
-    // so a constructed tray is not evidence of a visible one. Hiding there
-    // left a session playing with no window, no icon, and no way to stop it.
+  it('quits when the Linux tray has no registered host or item', () => {
+    // A successful Tray constructor is insufficient: main only publishes
+    // availability after both the host and our item have been registered.
     const action = studioCloseAction({
       quitting: false,
-      trayConstructed: true,
+      trayAvailable: false,
       closeToTray: true,
-      platform: 'linux',
     });
     expect(action).toBe('quit');
   });
@@ -75,9 +69,8 @@ describe('closing Studio with tray residency turned off', () => {
     // ever move the answer towards `quit`.
     const action = studioCloseAction({
       quitting: false,
-      trayConstructed: true,
+      trayAvailable: true,
       closeToTray: false,
-      platform: 'darwin',
     });
     expect(action).toBe('quit');
   });
@@ -85,9 +78,8 @@ describe('closing Studio with tray residency turned off', () => {
   it('quits on Windows even though the tray is real', () => {
     const action = studioCloseAction({
       quitting: false,
-      trayConstructed: true,
+      trayAvailable: true,
       closeToTray: false,
-      platform: 'win32',
     });
     expect(action).toBe('quit');
   });
@@ -97,9 +89,8 @@ describe('closing Studio with tray residency turned off', () => {
     // exits — the same failure the setting being on would cause.
     const action = studioCloseAction({
       quitting: true,
-      trayConstructed: true,
+      trayAvailable: true,
       closeToTray: false,
-      platform: 'darwin',
     });
     expect(action).toBe('close');
   });
@@ -110,9 +101,8 @@ describe('closing Studio while quitting', () => {
     // Otherwise the window refuses to close and the app never exits.
     const action = studioCloseAction({
       quitting: true,
-      trayConstructed: true,
+      trayAvailable: true,
       closeToTray: true,
-      platform: 'darwin',
     });
     expect(action).toBe('close');
   });

@@ -130,6 +130,8 @@ export interface DesktopBridge {
     subscribe(onChange: (theme: 'light' | 'dark') => void): Promise<'light' | 'dark'>;
   };
   readonly windows: {
+    /** Current tray availability (null while checking), then later changes. */
+    subscribeTray(onChange: (available: boolean) => void): Promise<boolean | null>;
     /** Bring Studio to the front, from the popover's "Open Studio". */
     showStudio(): Promise<void>;
     /**
@@ -185,6 +187,7 @@ export interface DesktopBridge {
 let onPresetsChanged: ((presets: Preset[]) => void) | null = null;
 let onHistoryChanged: ((records: SessionRecord[]) => void) | null = null;
 let onSettingsChanged: ((settings: Settings) => void) | null = null;
+let onTrayChanged: ((available: boolean) => void) | null = null;
 let onThemeChanged: ((theme: 'light' | 'dark') => void) | null = null;
 let onSessionChanged: ((update: Published<unknown>) => void) | null = null;
 let onExecutorMessage: ((message: ExecutorMessage) => void) | null = null;
@@ -206,6 +209,10 @@ ipcRenderer.on(CHANNELS.sessionChanged, (_event, update: Published<unknown>) => 
 });
 ipcRenderer.on(CHANNELS.executorCommand, (_event, message: ExecutorMessage) => {
   onExecutorMessage?.(message);
+});
+
+ipcRenderer.on(CHANNELS.windowsTrayChanged, (_event, available: boolean) => {
+  onTrayChanged?.(available);
 });
 
 const bridge: DesktopBridge = {
@@ -258,6 +265,10 @@ const bridge: DesktopBridge = {
     },
   },
   windows: {
+    subscribeTray: (onChange) => {
+      onTrayChanged = onChange;
+      return ipcRenderer.invoke(CHANNELS.windowsTraySubscribe);
+    },
     showStudio: () => ipcRenderer.invoke(CHANNELS.windowsShowStudio),
     setPopoverHeight: (pixels) => ipcRenderer.invoke(CHANNELS.windowsPopoverHeight, pixels),
   },

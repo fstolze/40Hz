@@ -232,9 +232,19 @@ counts finished sessions only â€” not Preview, and not the session in progress â
 appears between sessions, never during one. Studio and the tray both show the time recorded from
 today's sessions.
 
-The last two settings exist on macOS and Windows only. Launch at login opens the app and never
-starts a session. When the tray setting is off, and always on Linux, closing the Studio window
-quits the app, and a playing session is recorded first.
+Launch at login exists on macOS and Windows only. It opens the app and never starts a session.
+The tray setting is offered wherever tray support is available, including Linux. When enabled,
+closing Studio hides it and sessions keep playing. When disabled, or when no supported tray is
+available, closing quits the app and records a playing session first.
+
+On Linux, tray residency requires a running StatusNotifier host, this app's registered tray item,
+and the `gdbus` utility supplied by GLib. GNOME provides the host through its AppIndicator extension.
+If tray support disappears while Studio is hidden, Studio reopens. A failed bus read is retried
+before availability is withdrawn, and recovery checks continue after repeated read failures. A
+failed monitor is logged and leaves tray residency unavailable until the app restarts.
+
+On every platform, launching 40 Hz again brings back the existing window instead of starting a
+second copy or a second audio engine.
 
 **About**, at the bottom of Settings, shows the version and build.
 

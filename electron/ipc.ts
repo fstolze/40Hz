@@ -18,6 +18,7 @@
 
 import { ipcMain, nativeTheme, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import type { Store } from './store.ts';
+import type { TrayAvailability } from './tray-availability.ts';
 import { normalizeSettings, resolveTheme } from '../src/session/settings.ts';
 import { normalizeConfiguration } from '../src/audio/configuration.ts';
 import type { ExecutorLink } from '../src/session/executor-link.ts';
@@ -65,6 +66,8 @@ export const CHANNELS = {
   themeSubscribe: 'theme:subscribe',
   themeChanged: 'theme:changed',
   windowsShowStudio: 'windows:show-studio',
+  windowsTraySubscribe: 'windows:tray-subscribe',
+  windowsTrayChanged: 'windows:tray-changed',
   windowsPopoverHeight: 'windows:popover-height',
 } as const;
 
@@ -323,6 +326,7 @@ export function registerExecutorHandlers(link: ExecutorLink): void {
  * the same reason.
  */
 export interface WindowHooks {
+  trayAvailability: TrayAvailability;
   showStudio(): void;
   /**
    * The popover asking to be as tall as its content.
@@ -335,6 +339,23 @@ export interface WindowHooks {
 }
 
 export function registerWindowHandlers(hooks: WindowHooks): void {
+  const watchers = new Set<WebContents>();
+  hooks.trayAvailability.subscribe((available) => {
+    for (const contents of watchers) {
+      if (!contents.isDestroyed()) contents.send(CHANNELS.windowsTrayChanged, available);
+    }
+  });
+  ipcMain.handle(
+    CHANNELS.windowsTraySubscribe,
+    guard((event) => {
+      const contents = event.sender;
+      if (!watchers.has(contents)) {
+        watchers.add(contents);
+        contents.once('destroyed', () => watchers.delete(contents));
+      }
+      return hooks.trayAvailability.current;
+    }),
+  );
   ipcMain.handle(
     CHANNELS.windowsShowStudio,
     guard(() => {
